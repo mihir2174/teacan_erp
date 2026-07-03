@@ -247,3 +247,18 @@ app_license = "mit"
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
+doc_events = {
+    "Customer Order": {
+        "validate": "teacan_erp.api.validate_customer_order",
+    },
+    "Order Invoice": {
+        "validate": "teacan_erp.api.validate_order_invoice",
+    },
+    "Purchase": {
+        "validate": "teacan_erp.api.validate_purchase",
+    },
+    "Production": {
+        "validate": "teacan_erp.api.validate_production",
+        "on_update": "teacan_erp.api.production_after_save",
+    },
+}
