@@ -385,3 +385,51 @@ def apply_stock_usage():
     frappe.clear_cache(doctype="Stock Move")
     frappe.db.commit()
     print("OK -> Stock Move 'Used' type added")
+
+def add_tally_fields():
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields({
+        "Order Invoice": [
+            {"fieldname": "tally_status", "fieldtype": "Select", "label": "Tally Status",
+             "options": "Not Posted\nPosted\nError", "default": "Not Posted", "insert_after": "grand_total"},
+            {"fieldname": "tally_vch_no", "fieldtype": "Data", "label": "Tally Voucher No", "insert_after": "tally_status"},
+            {"fieldname": "tally_posted_on", "fieldtype": "Datetime", "label": "Tally Posted On", "insert_after": "tally_vch_no"},
+            {"fieldname": "tally_error", "fieldtype": "Small Text", "label": "Tally Error", "insert_after": "tally_posted_on"},
+        ],
+    })
+    frappe.db.commit()
+    print("OK -> tally tracking fields added to Order Invoice")
+
+def add_unit_support():
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields({
+        "Product": [
+            {"fieldname": "unit", "fieldtype": "Select", "label": "Unit",
+             "options": "nos\nkg", "default": "nos", "insert_after": "price"},
+        ],
+    })
+    dt = frappe.get_doc("DocType", "Order Item")
+    for f in dt.fields:
+        if f.fieldname == "qty":
+            f.fieldtype = "Float"
+    dt.save()
+    frappe.clear_cache(doctype="Order Item")
+    frappe.db.commit()
+    print("OK -> product unit added, qty now allows decimals")
+
+def add_unit_support():
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields({
+        "Product": [
+            {"fieldname": "unit", "fieldtype": "Select", "label": "Unit",
+             "options": "nos\nkg", "default": "nos", "insert_after": "price"},
+        ],
+    })
+    dt = frappe.get_doc("DocType", "Order Item")
+    for f in dt.fields:
+        if f.fieldname == "qty":
+            f.fieldtype = "Float"
+    dt.save()
+    frappe.clear_cache(doctype="Order Item")
+    frappe.db.commit()
+    print("OK -> product unit added, qty now allows decimals")

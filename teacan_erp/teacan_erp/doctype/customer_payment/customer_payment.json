@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 1,
  "autoname": "PAY-.#####",
  "creation": "2026-06-25 02:32:20.296702",
@@ -92,7 +93,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-25 02:32:20.296702",
+ "modified": "2026-07-04 13:49:48.460702",
  "modified_by": "Administrator",
  "module": "Teacan ERP",
  "name": "Customer Payment",
