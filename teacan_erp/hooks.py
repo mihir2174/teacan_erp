@@ -262,3 +262,7 @@ doc_events = {
         "on_update": "teacan_erp.api.production_after_save",
     },
 }
+
+# Auto-run the installer on every install and migrate
+after_install = "teacan_erp.build.setup_all"
+after_migrate = ["teacan_erp.build.setup_all"]

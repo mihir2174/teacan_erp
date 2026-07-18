@@ -443,3 +443,60 @@ def make_fcm_token():
             {"fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "1"},
         ],
         perms=[{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}])
+
+def setup_all():
+    import sys
+    mod = sys.modules[__name__]
+
+    core = [
+        ("Product", ["t1_product", "make_product", "t1"]),
+        ("Order Item", ["t2_order_item", "make_order_item", "t2"]),
+        ("Customer Order", ["t3_customer_order", "make_customer_order", "t3"]),
+        ("Order Invoice", ["t4_order_invoice", "make_order_invoice", "t4"]),
+        ("Raw Material", ["t5_raw_material", "make_raw_material", "t5"]),
+        ("Purchase Item", ["t6_purchase_item", "make_purchase_item", "t6"]),
+        ("Purchase", ["t7_purchase", "make_purchase", "t7"]),
+        ("Production Item", ["t8_production_item"]),
+        ("Production", ["t9_production"]),
+        ("Stock Move", ["t10_stock_move"]),
+        ("Customer", ["make_customer"]),
+        ("Customer Payment", ["make_customer_payment"]),
+        ("Vendor", ["make_vendor"]),
+        ("Vendor Payment", ["make_vendor_payment"]),
+        ("Daily Expense", ["make_daily_expense"]),
+        ("Raw Stock Move", ["make_raw_stock_move"]),
+        ("FCM Token", ["make_fcm_token"]),
+    ]
+    for dt, candidates in core:
+        if frappe.db.exists("DocType", dt):
+            print("exists: " + dt)
+            continue
+        fn = None
+        for name in candidates:
+            fn = getattr(mod, name, None)
+            if fn:
+                break
+        if not fn:
+            print("MISSING builder for: " + dt + " (tell developer)")
+            continue
+        try:
+            fn()
+            print("created: " + dt)
+        except Exception as e:
+            print("FAIL creating " + dt + ": " + str(e)[:140])
+
+    fixers = ["grant_pm", "apply_perm_changes", "add_invoice_amounts",
+              "add_opening_fields", "apply_stock_usage", "add_tally_fields", "add_unit_support"]
+    for name in fixers:
+        fn = getattr(mod, name, None)
+        if not fn:
+            print("skip (not present): " + name)
+            continue
+        try:
+            fn()
+            print("ok: " + name)
+        except Exception as e:
+            print("FAIL " + name + ": " + str(e)[:140])
+
+    frappe.db.commit()
+    print("DONE -> setup_all complete")
