@@ -1116,3 +1116,114 @@ def post_invoice_to_tally(invoice, force=0):
     frappe.db.set_value("Order Invoice", inv.name, {"tally_status": "Error", "tally_error": err})
     frappe.db.commit()
     return {"ok": False, "error": err}
+
+@frappe.whitelist()
+def save_push_token(token, device=None):
+    _ledger_guard()
+    token = (token or "").strip()
+    if not token:
+        return {"ok": False}
+    if not frappe.get_all("FCM Token", filters={"token": token}, limit=1):
+        frappe.get_doc({"doctype": "FCM Token", "token": token, "user": frappe.session.user,
+                        "device": (device or "")[:120], "enabled": 1}).insert(ignore_permissions=True)
+        frappe.db.commit()
+    return {"ok": True}
+
+
+def _fcm_access_token():
+    from google.oauth2 import service_account
+    import google.auth.transport.requests
+    path = frappe.conf.get("fcm_service_account")
+    creds = service_account.Credentials.from_service_account_file(
+        path, scopes=["https://www.googleapis.com/auth/firebase.messaging"])
+    creds.refresh(google.auth.transport.requests.Request())
+    return creds.token
+
+
+def _fcm_send(title, body):
+    pid = frappe.conf.get("fcm_project_id")
+    if not pid or not frappe.conf.get("fcm_service_account"):
+        return 0
+    import requests
+    try:
+        at = _fcm_access_token()
+    except Exception:
+        frappe.log_error(frappe.get_traceback()[:3000], "FCM auth failed")
+        return 0
+    sent = 0
+    for row in frappe.get_all("FCM Token", filters={"enabled": 1}, fields=["name", "token"]):
+        try:
+            r = requests.post(
+                "https://fcm.googleapis.com/v1/projects/" + pid + "/messages:send",
+                headers={"Authorization": "Bearer " + at, "Content-Type": "application/json"},
+                json={"message": {"token": row.token,
+                                  "notification": {"title": title, "body": body},
+                                  "webpush": {"fcm_options": {"link": "/shalini"},
+                                              "headers": {"Urgency": "high"}}}},
+                timeout=10)
+            if r.status_code == 200:
+                sent += 1
+            elif r.status_code == 404 or "UNREGISTERED" in (r.text or ""):
+                frappe.delete_doc("FCM Token", row.name, ignore_permissions=True, force=True)
+        except Exception:
+            pass
+    frappe.db.commit()
+    return sent
+
+
+@frappe.whitelist()
+def fcm_test():
+    _ledger_guard()
+    n = _fcm_send("Shalini ERP test", "If you can read this on your phone, FCM works.")
+    return {"ok": True, "sent_to": n, "registered_phones": len(frappe.get_all("FCM Token", filters={"enabled": 1}))}
+
+
+@frappe.whitelist()
+def notify_new_order(order):
+    if not frappe.db.exists("Customer Order", order):
+        return {"ok": False, "sent": False, "reason": "order not found"}
+    d = frappe.db.get_value("Customer Order", order, ["customer", "salesman", "total_amount", "total_qty"], as_dict=True) or {}
+    sm = d.get("salesman") or frappe.session.user
+    smname = frappe.db.get_value("User", sm, "full_name") or sm
+    title = "New order " + str(order) + " - " + (d.get("customer") or "-")
+    body = ("By " + str(smname) + "  |  Qty " + str(d.get("total_qty") or 0) +
+            "  |  Rs " + str(d.get("total_amount") or 0))
+    n = _fcm_send(title, body)
+    if n > 0:
+        return {"ok": True, "sent": True, "via": "fcm", "phones": n}
+    topic = (frappe.conf.get("ntfy_topic") or "").strip()
+    if topic:
+        try:
+            import requests
+            requests.post("https://ntfy.sh/" + topic, data=body.encode("utf-8"),
+                          headers={"Title": title, "Priority": "high"}, timeout=10)
+            return {"ok": True, "sent": True, "via": "ntfy"}
+        except Exception:
+            pass
+    return {"ok": True, "sent": False, "reason": "no phones registered / not configured"}
+
+# ---- Tally target: office PC + fixed company (code defaults) ----
+
+def _tally_url():
+    return (frappe.conf.get("tally_url") or "http://192.168.1.5:9000").rstrip("/")
+
+
+def _tally_company():
+    return (frappe.conf.get("tally_company") or "Shalini Enterprise").strip()
+
+
+def _tally_post(xml):
+    import requests
+    comp = _tally_company()
+    if comp and "SVCURRENTCOMPANY" not in xml:
+        tag = "<SVCURRENTCOMPANY>" + _x(comp) + "</SVCURRENTCOMPANY>"
+        if "<STATICVARIABLES>" in xml:
+            xml = xml.replace("<STATICVARIABLES>", "<STATICVARIABLES>" + tag, 1)
+        elif "</REPORTNAME>" in xml:
+            xml = xml.replace("</REPORTNAME>", "</REPORTNAME><STATICVARIABLES>" + tag + "</STATICVARIABLES>", 1)
+    url = _tally_url()
+    try:
+        r = requests.post(url, data=xml.encode("utf-8"), headers={"Content-Type": "text/xml"}, timeout=25)
+        return r.text or ""
+    except Exception as e:
+        frappe.throw("Cannot reach Tally at " + url + " - is TallyPrime open on the Tally PC? (" + str(e)[:120] + ")")

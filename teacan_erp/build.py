@@ -433,3 +433,13 @@ def add_unit_support():
     frappe.clear_cache(doctype="Order Item")
     frappe.db.commit()
     print("OK -> product unit added, qty now allows decimals")
+
+def make_fcm_token():
+    make("FCM Token",
+        [
+            {"fieldname": "token", "fieldtype": "Small Text", "label": "Token", "reqd": 1, "in_list_view": 1},
+            {"fieldname": "user", "fieldtype": "Link", "label": "User", "options": "User", "in_list_view": 1},
+            {"fieldname": "device", "fieldtype": "Data", "label": "Device"},
+            {"fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "1"},
+        ],
+        perms=[{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}])
