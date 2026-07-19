@@ -1,4 +1,4 @@
-import frappe
+Xxximport frappe
 from frappe.utils.password import update_password
 
 ROLE_MAP = [
@@ -79,7 +79,7 @@ def validate_customer_order(doc, method=None):
     total_qty = 0
     total_amount = 0
     for row in (doc.items or []):
-        if (not row.rate) and row.product:
+      if (not row.rate) and row.product:
             row.rate = frappe.db.get_value("Product", row.product, "price") or 0
         row.amount = (row.qty or 0) * (row.rate or 0)
         total_qty += (row.qty or 0)
@@ -1209,7 +1209,7 @@ def _tally_url():
 
 
 def _tally_company():
-    return (frappe.conf.get("Shalini ERP") or "Shalini ERP").strip()
+    return (frappe.conf.get("tally_company") or "Shalini ERP").strip()
 
 
 def _tally_post(xml):
@@ -1255,7 +1255,7 @@ def api_health():
     for dt, fn in opt:
         out["fields"][dt + "." + fn + " (optional)"] = has_field(dt, fn)
 
-    for k in ["tally_url", "Shalini ERP", "tally_sales_ledger", "tally_cgst_ledger",
+    for k in ["tally_url", "tally_company", "tally_sales_ledger", "tally_cgst_ledger",
               "tally_sgst_ledger", "fcm_project_id", "fcm_service_account", "ntfy_topic"]:
         out["config_set"][k] = bool(frappe.conf.get(k))
 
