@@ -423,8 +423,8 @@ def _tally_url():
 
 def _tally_ledgers():
     return {
-        "sales": frappe.conf.get("tally_sales_ledger") or "Sales",
-        "cgst": frappe.conf.get("tally_cgst_ledger") or "C Gst",
+        "sales": frappe.conf.get("tally_sales_ledger") or "Sales Gst - 5%",
+        "cgst": frappe.conf.get("tally_cgst_ledger") or "C GST",
         "sgst": frappe.conf.get("tally_sgst_ledger") or "S GST",
     }
 
