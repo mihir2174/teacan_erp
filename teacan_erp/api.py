@@ -1227,3 +1227,42 @@ def _tally_post(xml):
         return r.text or ""
     except Exception as e:
         frappe.throw("Cannot reach Tally at " + url + " - is TallyPrime open on the Tally PC? (" + str(e)[:120] + ")")
+
+@frappe.whitelist()
+def api_health():
+    _ledger_guard()
+    out = {"doctypes": {}, "fields": {}, "config_set": {}}
+    dts = ["Product", "Order Item", "Customer Order", "Order Invoice", "Customer",
+           "Customer Payment", "Vendor", "Purchase Item", "Purchase", "Vendor Payment",
+           "Daily Expense", "Production Item", "Production", "Stock Move",
+           "Raw Material", "Raw Stock Move", "FCM Token"]
+    for dt in dts:
+        out["doctypes"][dt] = bool(frappe.db.exists("DocType", dt))
+
+    def has_field(dt, fn):
+        try:
+            return bool(out["doctypes"].get(dt) and frappe.get_meta(dt).get_field(fn))
+        except Exception:
+            return False
+
+    req = [("Order Invoice", "a_amount"), ("Order Invoice", "b_amount"),
+           ("Order Invoice", "grand_total"), ("Order Invoice", "tally_status"),
+           ("Product", "unit"), ("Customer", "tally_ledger"), ("Customer", "salesman"),
+           ("Customer Payment", "tally_voucher_id"), ("Customer Payment", "channel")]
+    opt = [("Customer", "opening_a"), ("Customer", "opening_b"), ("Vendor", "opening_payable")]
+    for dt, fn in req:
+        out["fields"][dt + "." + fn] = has_field(dt, fn)
+    for dt, fn in opt:
+        out["fields"][dt + "." + fn + " (optional)"] = has_field(dt, fn)
+
+    for k in ["tally_url", "tally_company", "tally_sales_ledger", "tally_cgst_ledger",
+              "tally_sgst_ledger", "fcm_project_id", "fcm_service_account", "ntfy_topic"]:
+        out["config_set"][k] = bool(frappe.conf.get(k))
+
+    missing = [k for k, v in out["doctypes"].items() if not v]
+    missing += [k for k, v in out["fields"].items() if (not v and "(optional)" not in k)]
+    out["missing"] = missing
+    out["ok"] = not missing
+    out["hint"] = "All good - APIs have everything they need." if not missing else \
+        "Run: bench execute teacan_erp.build.setup_all  (creates the missing pieces), then restart."
+    return out

@@ -1,0 +1,16 @@
+{
+  "name": "Shalini ERP - Shalini Industries",
+  "short_name": "Shalini ERP",
+  "description": "Orders, invoicing, production, stock and ledgers for Shalini Industries.",
+  "start_url": "/shalini",
+  "scope": "/shalini",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F5F7FB",
+  "theme_color": "#123E30",
+  "icons": [
+    { "src": "/assets/teacan_erp/frontend/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/assets/teacan_erp/frontend/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/assets/teacan_erp/frontend/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
