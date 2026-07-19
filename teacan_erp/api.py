@@ -1209,7 +1209,7 @@ def _tally_url():
 
 
 def _tally_company():
-    return (frappe.conf.get("Shalini ERP") or "Shalini ERP").strip()
+    return (frappe.conf.get("tally_company") or "Shalini ERP").strip()
 
 
 def _tally_post(xml):
@@ -1255,7 +1255,7 @@ def api_health():
     for dt, fn in opt:
         out["fields"][dt + "." + fn + " (optional)"] = has_field(dt, fn)
 
-    for k in ["tally_url", "Shalini ERP", "tally_sales_ledger", "tally_cgst_ledger",
+    for k in ["tally_url", "tally_company", "tally_sales_ledger", "tally_cgst_ledger",
               "tally_sgst_ledger", "fcm_project_id", "fcm_service_account", "ntfy_topic"]:
         out["config_set"][k] = bool(frappe.conf.get(k))
 
@@ -1358,6 +1358,158 @@ def post_invoice_to_tally(invoice, force=0):
                 return {"ok": False, "error": err}
 
     L = _tally_ledgers()
+    d8 = str(inv.creation)[:10].replace("-", "")
+    inv_rows = []
+    for l in lines:
+        q = ("%g" % l["qty"])
+        u = l["unit"]
+        inv_rows.append('<ALLINVENTORYENTRIES.LIST>'
+                        '<STOCKITEMNAME>' + _x(l["item"]) + '</STOCKITEMNAME>'
+                        '<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>'
+                        '<RATE>' + ("%.2f" % l["rate"]) + '/' + _x(u) + '</RATE>'
+                        '<ACTUALQTY> ' + q + ' ' + _x(u) + '</ACTUALQTY>'
+                        '<BILLEDQTY> ' + q + ' ' + _x(u) + '</BILLEDQTY>'
+                        '<AMOUNT>' + ("%.2f" % l["amount"]) + '</AMOUNT>'
+                        '<ACCOUNTINGALLOCATIONS.LIST>'
+                        '<LEDGERNAME>' + _x(L["sales"]) + '</LEDGERNAME>'
+                        '<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>'
+                        '<AMOUNT>' + ("%.2f" % l["amount"]) + '</AMOUNT>'
+                        '</ACCOUNTINGALLOCATIONS.LIST></ALLINVENTORYENTRIES.LIST>')
+
+    led_rows = ['<LEDGERENTRIES.LIST><LEDGERNAME>' + _x(tled) + '</LEDGERNAME>'
+                '<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE><ISPARTYLEDGER>Yes</ISPARTYLEDGER>'
+                '<AMOUNT>-' + ("%.2f" % total) + '</AMOUNT></LEDGERENTRIES.LIST>']
+    if cgst > 0:
+        led_rows.append('<LEDGERENTRIES.LIST><LEDGERNAME>' + _x(L["cgst"]) + '</LEDGERNAME>'
+                        '<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>' + ("%.2f" % cgst) + '</AMOUNT></LEDGERENTRIES.LIST>')
+    if sgst > 0:
+        led_rows.append('<LEDGERENTRIES.LIST><LEDGERNAME>' + _x(L["sgst"]) + '</LEDGERNAME>'
+                        '<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>' + ("%.2f" % sgst) + '</AMOUNT></LEDGERENTRIES.LIST>')
+
+    gst_tag = ('<PARTYGSTIN>' + _x(gstin) + '</PARTYGSTIN>') if gstin else ''
+    xml = ('<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA>'
+           '<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES>'
+           '<SVCURRENTCOMPANY>' + _x(_tally_company()) + '</SVCURRENTCOMPANY>'
+           '</STATICVARIABLES></REQUESTDESC><REQUESTDATA>'
+           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Sales" ACTION="Create">'
+           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>'
+           '<VOUCHERNUMBER>' + _x(inv.name) + '</VOUCHERNUMBER>'
+           '<PARTYLEDGERNAME>' + _x(tled) + '</PARTYLEDGERNAME>'
+           '<PARTYNAME>' + _x(tled) + '</PARTYNAME>' + gst_tag +
+           '<ISINVOICE>Yes</ISINVOICE><PERSISTEDVIEW>Invoice Voucher View</PERSISTEDVIEW>'
+           '<NARRATION>Shalini ERP ' + _x(inv.name) + ' / ' + _x(inv.get("order") or "") + '</NARRATION>'
+           + "".join(led_rows) + "".join(inv_rows) +
+           '</VOUCHER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>')
+
+    t = _tally_post(xml)
+    if _tally_import_ok(t):
+        frappe.db.set_value("Order Invoice", inv.name, {
+            "tally_status": "Posted", "tally_vch_no": inv.name,
+            "tally_posted_on": frappe.utils.now(), "tally_error": ""})
+        frappe.db.commit()
+        return {"ok": True, "voucher": inv.name, "party": tled, "total": total, "items": len(lines)}
+    err = _tally_err(t) or ("Tally did not accept the invoice. Reply: " + (t[:200] if t else "(empty)"))
+    frappe.db.set_value("Order Invoice", inv.name, {"tally_status": "Error", "tally_error": err})
+    frappe.db.commit()
+    return {"ok": False, "error": err}
+
+# ===== per-rate ledger mapping + corrected company default =====
+
+def _tally_company():
+    return (frappe.conf.get("tally_company") or "Shalini ERP").strip()
+
+def _tally_ledgers_for_rate(rate=5):
+    rate = float(rate or 5)
+    half = rate / 2
+    sales = frappe.conf.get("tally_sales_ledger") or ("Sales Gst - %g%%" % rate)
+    cgst = frappe.conf.get("tally_cgst_ledger") or "C GST"
+    sgst = frappe.conf.get("tally_sgst_ledger") or "S GST"
+    if not frappe.conf.get("tally_sales_ledger"):
+        sales = "Sales Gst - %g%%" % rate
+    return {"sales": sales, "cgst": cgst, "sgst": sgst}
+
+def _ensure_ledger(name, parent):
+    if _tally_has_ledger(name):
+        return
+    xml = ('<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA>'
+           '<REQUESTDESC><REPORTNAME>All Masters</REPORTNAME><STATICVARIABLES>'
+           '<SVCURRENTCOMPANY>' + _x(_tally_company()) + '</SVCURRENTCOMPANY>'
+           '</STATICVARIABLES></REQUESTDESC><REQUESTDATA>'
+           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><LEDGER NAME="' + _x(name) + '" ACTION="Create">'
+           '<NAME>' + _x(name) + '</NAME><PARENT>' + _x(parent) + '</PARENT>'
+           '</LEDGER></TALLYMESSAGE></REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>')
+    _tally_post(xml)
+
+@frappe.whitelist()
+def post_invoice_to_tally(invoice, force=0):
+    _ledger_guard()
+    inv = frappe.get_doc("Order Invoice", invoice)
+    if (inv.get("tally_status") or "") == "Posted" and not int(force or 0):
+        return {"ok": False, "error": "Already posted (" + (inv.get("tally_vch_no") or inv.name) + ")"}
+
+    gst_rate = float(inv.get("gst_rate") or 5)
+    cgst = float(inv.get("a_cgst") or 0)
+    sgst = float(inv.get("a_sgst") or 0)
+    disc = float(inv.get("discount") or 0)
+    share = float(inv.get("split_pct") or 0)
+
+    cust = (inv.get("customer") or "").strip()
+    if not cust:
+        return {"ok": False, "error": "No customer"}
+    tled, gstin = cust, ""
+    if frappe.db.exists("Customer", cust):
+        row = frappe.db.get_value("Customer", cust, ["tally_ledger", "gstin"], as_dict=True) or {}
+        tled = (row.get("tally_ledger") or cust).strip() or cust
+        gstin = (row.get("gstin") or "").strip()
+
+    lines = []
+    if inv.get("order") and frappe.db.exists("Customer Order", inv.order):
+        order = frappe.get_doc("Customer Order", inv.order)
+        for it in (order.items or []):
+            qty = float(it.qty or 0)
+            main = float(it.rate or 0)
+            d = main * (1.0 - disc / 100.0)
+            a_rate = round(d * share / 100.0, 2)
+            amt = round(a_rate * qty, 2)
+            if qty <= 0 or amt <= 0:
+                continue
+            pname, punit = it.product, "nos"
+            if frappe.db.exists("Product", it.product):
+                pr = frappe.db.get_value("Product", it.product, ["product_name", "unit"], as_dict=True) or {}
+                pname = pr.get("product_name") or it.product
+                punit = (pr.get("unit") or "nos").strip() or "nos"
+            lines.append({"item": pname, "qty": qty, "rate": a_rate, "amount": amt, "unit": punit})
+    if not lines:
+        return {"ok": False, "error": "No order items to post"}
+
+    goods = round(sum(l["amount"] for l in lines), 2)
+    total = round(goods + cgst + sgst, 2)
+    if total <= 0:
+        return {"ok": False, "error": "Invoice A total is 0"}
+
+    L = _tally_ledgers_for_rate(gst_rate)
+    _ensure_ledger(L["sales"], "Sales Accounts")
+    _ensure_ledger(L["cgst"], "Duties & Taxes")
+    _ensure_ledger(L["sgst"], "Duties & Taxes")
+
+    if not _tally_has_ledger(tled):
+        ok, rep = _tally_create_party_gst(tled, gstin)
+        if not ok and "already exist" not in rep.lower():
+            err = _tally_err(rep) or "Could not create customer ledger"
+            frappe.db.set_value("Order Invoice", inv.name, {"tally_status": "Error", "tally_error": err}); frappe.db.commit()
+            return {"ok": False, "error": err}
+
+    for u in sorted(set(l["unit"] for l in lines)):
+        _tally_ensure_unit(u)
+    items_raw = _tally_all_items_raw().lower()
+    for l in lines:
+        if ('name="' + _x(l["item"]).lower() + '"') not in items_raw:
+            ok, rep = _tally_create_item(l["item"], l["unit"])
+            if not ok and "already exist" not in rep.lower():
+                err = _tally_err(rep) or ("Could not create item '" + l["item"] + "'")
+                frappe.db.set_value("Order Invoice", inv.name, {"tally_status": "Error", "tally_error": err}); frappe.db.commit()
+                return {"ok": False, "error": err}
+
     d8 = str(inv.creation)[:10].replace("-", "")
     inv_rows = []
     for l in lines:
