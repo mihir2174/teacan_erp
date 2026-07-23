@@ -1564,3 +1564,530 @@ def post_invoice_to_tally(invoice, force=0):
     frappe.db.set_value("Order Invoice", inv.name, {"tally_status": "Error", "tally_error": err})
     frappe.db.commit()
     return {"ok": False, "error": err}
+
+# ===== TALLY -> ERP : purchases, vendors, vendor payments =====
+
+def _tv_num(s):
+    import re
+    if s is None:
+        return 0.0
+    m = re.search(r"-?\d+(?:\.\d+)?", str(s).replace(",", ""))
+    return float(m.group(0)) if m else 0.0
+
+
+def _tv_unesc(s):
+    return (s or "").replace("&amp;", "&").replace("&quot;", '"').replace("&apos;", "'") \
+                    .replace("&lt;", "<").replace("&gt;", ">").strip()
+
+
+def _tally_vouchers(vtype, start, end):
+    xml = ('<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>'
+           '<TYPE>Data</TYPE><ID>Voucher Register</ID></HEADER><BODY><DESC><STATICVARIABLES>'
+           '<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>'
+           '<SVCURRENTCOMPANY>' + _x(_tally_company()) + '</SVCURRENTCOMPANY>'
+           '<SVFROMDATE>' + start + '</SVFROMDATE><SVTODATE>' + end + '</SVTODATE>'
+           '<VOUCHERTYPENAME>' + _x(vtype) + '</VOUCHERTYPENAME>'
+           '</STATICVARIABLES></DESC></BODY></ENVELOPE>')
+    return _tally_post(xml)
+
+
+def _vendor_map():
+    m = {}
+    for v in frappe.get_all("Vendor", fields=["name", "tally_ledger"]):
+        m[(v.tally_ledger or v.name).strip().lower()] = v.name
+    return m
+
+
+@frappe.whitelist()
+def pull_tally_purchases():
+    _ledger_guard()
+    import re
+    from frappe.utils import today
+    start = frappe.conf.get("tally_books_from") or "20250401"
+    end = today().replace("-", "")
+
+    tax_words = ("gst", "tax", "cess", "vat", "duty")
+    made_p = skip_p = seen_p = 0
+    made_v = made_m = 0
+    made_pay = skip_pay = 0
+    unmatched = []
+
+    vmap = _vendor_map()
+    t = _tally_vouchers("Purchase", start, end)
+
+    for vm in re.finditer(r"<VOUCHER\b[^>]*>(.*?)</VOUCHER>", t or "", re.S):
+        v = vm.group(1)
+        seen_p += 1
+
+        def fld(tag, blob=None):
+            m = re.search("<" + tag + r">(.*?)</" + tag + ">", blob if blob is not None else v, re.S)
+            return _tv_unesc(m.group(1)) if m else ""
+
+        vtype = fld("VOUCHERTYPENAME").lower()
+        if vtype and "purchase" not in vtype:
+            continue
+        guid = fld("GUID")
+        if not guid:
+            continue
+        if frappe.db.exists("Purchase", {"tally_voucher_id": guid}):
+            skip_p += 1
+            continue
+
+        d8 = fld("DATE")
+        pdate = (d8[:4] + "-" + d8[4:6] + "-" + d8[6:8]) if len(d8) == 8 else None
+        vno = fld("VOUCHERNUMBER")
+        bill = fld("REFERENCE") or vno
+        gstin = fld("PARTYGSTIN")
+
+        party = fld("PARTYLEDGERNAME") or fld("PARTYNAME")
+        if not party:
+            for em in re.finditer(r"<(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>(.*?)</(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>", v, re.S):
+                e = em.group(1)
+                if "<ISPARTYLEDGER>Yes</ISPARTYLEDGER>" in e:
+                    party = fld("LEDGERNAME", e)
+                    break
+        if not party:
+            continue
+
+        tax = 0.0
+        for em in re.finditer(r"<(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>(.*?)</(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>", v, re.S):
+            e = em.group(1)
+            ln = fld("LEDGERNAME", e)
+            if not ln or ln.strip().lower() == party.strip().lower():
+                continue
+            low = ln.lower()
+            if any(w in low for w in tax_words):
+                tax += abs(_tv_num(fld("AMOUNT", e)))
+
+        lines = []
+        for im in re.finditer(r"<ALLINVENTORYENTRIES\.LIST>(.*?)</ALLINVENTORYENTRIES\.LIST>", v, re.S):
+            e = im.group(1)
+            item = fld("STOCKITEMNAME", e)
+            if not item:
+                continue
+            qty = abs(_tv_num(fld("BILLEDQTY", e) or fld("ACTUALQTY", e)))
+            amt = abs(_tv_num(fld("AMOUNT", e)))
+            rate = abs(_tv_num(fld("RATE", e)))
+            if qty <= 0:
+                qty = 1.0
+            if rate <= 0 and qty:
+                rate = amt / qty
+            lines.append({"item": item, "qty": qty, "rate": rate, "amount": amt})
+
+        if not lines:
+            for em in re.finditer(r"<(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>(.*?)</(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>", v, re.S):
+                e = em.group(1)
+                ln = fld("LEDGERNAME", e)
+                low = (ln or "").lower()
+                if not ln or ln.strip().lower() == party.strip().lower():
+                    continue
+                if any(w in low for w in tax_words):
+                    continue
+                amt = abs(_tv_num(fld("AMOUNT", e)))
+                if amt > 0:
+                    lines.append({"item": ln, "qty": 1.0, "rate": amt, "amount": amt})
+                    break
+            if not lines:
+                continue
+
+        goods = sum(l["amount"] for l in lines)
+        gst_pct = 0.0
+        if goods > 0 and tax > 0:
+            raw = tax / goods * 100.0
+            gst_pct = round(raw, 2)
+            for std in (3, 5, 12, 18, 28):
+                if abs(raw - std) < 0.6:
+                    gst_pct = float(std)
+                    break
+
+        vend = vmap.get(party.strip().lower())
+        if not vend:
+            if frappe.db.exists("Vendor", party):
+                vend = party
+            else:
+                frappe.get_doc({"doctype": "Vendor", "vendor_name": party,
+                                "gstin": gstin or "", "tally_ledger": party}).insert(ignore_permissions=True)
+                vend = party
+                made_v += 1
+            vmap[party.strip().lower()] = vend
+
+        items = []
+        for l in lines:
+            if not frappe.db.exists("Raw Material", l["item"]):
+                frappe.get_doc({"doctype": "Raw Material", "material_name": l["item"]}).insert(ignore_permissions=True)
+                made_m += 1
+            items.append({"material": l["item"], "quantity": l["qty"],
+                          "price": round(l["rate"], 2), "gst_pct": gst_pct})
+
+        doc = frappe.get_doc({"doctype": "Purchase", "vendor_name": vend,
+                              "vendor_gstin": gstin or "", "items": items})
+        doc.insert(ignore_permissions=True)
+        frappe.db.set_value("Purchase", doc.name, {
+            "tally_voucher_id": guid, "bill_no": bill,
+            "purchase_date": pdate, "source": "Tally"})
+        made_p += 1
+
+    t2 = _tally_vouchers("Payment", start, end)
+    for vm in re.finditer(r"<VOUCHER\b[^>]*>(.*?)</VOUCHER>", t2 or "", re.S):
+        v = vm.group(1)
+
+        def f2(tag, blob=None):
+            m = re.search("<" + tag + r">(.*?)</" + tag + ">", blob if blob is not None else v, re.S)
+            return _tv_unesc(m.group(1)) if m else ""
+
+        guid = f2("GUID")
+        if not guid:
+            continue
+        d8 = f2("DATE")
+        pdate = (d8[:4] + "-" + d8[4:6] + "-" + d8[6:8]) if len(d8) == 8 else None
+        vno = f2("VOUCHERNUMBER")
+        for em in re.finditer(r"<(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>(.*?)</(?:ALLLEDGERENTRIES|LEDGERENTRIES)\.LIST>", v, re.S):
+            e = em.group(1)
+            ln = f2("LEDGERNAME", e)
+            if not ln:
+                continue
+            vend = vmap.get(ln.strip().lower())
+            if not vend:
+                if ln not in unmatched:
+                    unmatched.append(ln)
+                continue
+            amt = abs(_tv_num(f2("AMOUNT", e)))
+            if amt <= 0:
+                continue
+            key = guid + "|" + vend
+            if frappe.db.exists("Vendor Payment", {"tally_voucher_id": key}):
+                skip_pay += 1
+                continue
+            doc = frappe.get_doc({"doctype": "Vendor Payment", "vendor": vend, "amount": amt,
+                                  "payment_date": pdate, "reference": ("Tally " + vno).strip()})
+            doc.insert(ignore_permissions=True)
+            frappe.db.set_value("Vendor Payment", doc.name, {"tally_voucher_id": key})
+            made_pay += 1
+
+    frappe.db.commit()
+    return {"ok": True, "purchases_imported": made_p, "purchases_already_had": skip_p,
+            "purchase_vouchers_seen": seen_p, "vendors_created": made_v,
+            "materials_created": made_m, "vendor_payments_imported": made_pay,
+            "vendor_payments_already_had": skip_pay,
+            "unmatched_payment_ledgers": unmatched[:8]}
+
+
+@frappe.whitelist()
+def vendor_ledger(vendor):
+    _ledger_guard()
+    v = frappe.get_doc("Vendor", vendor)
+    purs = frappe.get_all("Purchase", filters={"vendor_name": vendor},
+                          fields=["name", "total_amount", "creation"], order_by="creation asc")
+    pays = frappe.get_all("Vendor Payment", filters={"vendor": vendor},
+                          fields=["name", "amount", "reference", "payment_date", "creation"], order_by="creation asc")
+    purchased = sum((r.total_amount or 0) for r in purs)
+    paid = sum((r.amount or 0) for r in pays)
+    rows = []
+    for r in purs:
+        pd = frappe.db.get_value("Purchase", r.name, "purchase_date")
+        bill = frappe.db.get_value("Purchase", r.name, "bill_no")
+        dt = str(pd) if pd else str(r.creation)[:10]
+        rows.append({"date": dt, "sort": dt + "1", "desc": "Purchase - " + (bill or r.name),
+                     "debit": (r.total_amount or 0), "credit": 0})
+    for r in pays:
+        dt = str(r.payment_date) if r.payment_date else str(r.creation)[:10]
+        rows.append({"date": dt, "sort": dt + "2", "desc": "Payment - " + (r.reference or r.name),
+                     "debit": 0, "credit": (r.amount or 0)})
+    rows.sort(key=lambda x: x["sort"])
+    bal = 0.0
+    for r in rows:
+        bal += r["debit"] - r["credit"]
+        r["balance"] = bal
+    return {"vendor": v.name, "vendor_name": v.vendor_name, "gstin": v.gstin,
+            "purchased": purchased, "paid": paid, "outstanding": purchased - paid, "statement": rows}
+
+@frappe.whitelist()
+def live_stock():
+    prods = frappe.get_all("Product", fields=["name", "product_name", "unit", "price"], order_by="product_name asc")
+    moves = frappe.get_all("Stock Move", fields=["product", "quantity"])
+    pending = frappe.get_all("Customer Order", filters={"status": "Pending"}, fields=["name"])
+
+    stock_map = {}
+    for m in moves:
+        if m.product:
+            stock_map[m.product] = stock_map.get(m.product, 0) + (m.quantity or 0)
+
+    pending_map = {}
+    for o in pending:
+        items = frappe.get_all("Order Item", filters={"parent": o.name}, fields=["product", "qty"])
+        for it in items:
+            if it.product:
+                pending_map[it.product] = pending_map.get(it.product, 0) + (it.qty or 0)
+
+    out = []
+    for p in prods:
+        s = stock_map.get(p.name, 0)
+        pend = pending_map.get(p.name, 0)
+        out.append({
+            "product": p.name, "product_name": p.product_name,
+            "unit": p.unit or "nos", "price": p.price or 0,
+            "in_stock": s, "pending_orders": pend, "available": s - pend,
+        })
+    return out
+
+
+@frappe.whitelist()
+def deduct_stock_on_confirm(order):
+    if not frappe.db.exists("Customer Order", order):
+        return
+    doc = frappe.get_doc("Customer Order", order)
+    if doc.status != "Confirmed":
+        return
+    already = frappe.get_all("Stock Move", filters={"reference": order, "entry_type": "Order Deduct"}, limit=1)
+    if already:
+        return
+    for it in (doc.items or []):
+        if (it.qty or 0) > 0:
+            frappe.get_doc({
+                "doctype": "Stock Move", "product": it.product,
+                "quantity": -(it.qty or 0), "entry_type": "Order Deduct",
+                "reference": order, "notes": "Auto-deducted on order confirm",
+            }).insert(ignore_permissions=True)
+    frappe.db.commit()
+
+def validate_order_invoice(doc, method=None):
+    if not doc.order or not frappe.db.exists("Customer Order", doc.order):
+        return
+    order = frappe.get_doc("Customer Order", doc.order)
+    discount = doc.discount or 0
+    pct = doc.split_pct if doc.split_pct is not None else 50
+    gst = doc.gst_rate if doc.gst_rate is not None else 18
+    charges = (doc.transportation or 0) + (doc.packaging or 0)
+    special = float(doc.get("b_special_discount") or 0)
+    ex_qty = float(doc.get("b_extra_qty") or 0)
+    ex_price = float(doc.get("b_extra_price") or 0)
+    extra = _inv_r2(ex_qty * ex_price)
+
+    def split(share, extra_charge, gstrate):
+        goods = 0.0
+        for it in (order.items or []):
+            main = it.rate or 0
+            disc = main * (1 - discount / 100.0)
+            rate = _inv_r2(disc * share / 100.0)
+            goods += _inv_r2(rate * (it.qty or 0))
+        goods = _inv_r2(goods)
+        half = gstrate / 2.0
+        cgst = _inv_r2(goods * half / 100.0)
+        sgst = _inv_r2(goods * half / 100.0)
+        total = _inv_r2(goods + cgst + sgst + extra_charge)
+        return goods, cgst, sgst, total
+
+    ag, ac, asg, at = split(pct, 0, gst)
+    bg, bc, bsg, bt = split(100 - pct, charges, 0)
+    bg_total = _inv_r2(bg + extra)
+    bt = _inv_r2(bg_total + charges + special)
+
+    doc.a_goods = ag
+    doc.a_cgst = ac
+    doc.a_sgst = asg
+    doc.a_amount = at
+    doc.b_goods = bg_total
+    doc.b_cgst = 0
+    doc.b_sgst = 0
+    doc.b_charges = charges
+    doc.b_amount = bt
+    doc.grand_total = _inv_r2(at + bt)
+
+
+def validate_customer_order(doc, method=None):
+    tq = 0.0
+    ta = 0.0
+    for row in (doc.items or []):
+        if not row.rate:
+            row.rate = frappe.db.get_value("Product", row.product, "price") or 0
+        amt = (row.qty or 0) * (row.rate or 0)
+        try:
+            row.amount = amt
+        except Exception:
+            pass
+        tq += (row.qty or 0)
+        ta += amt
+    doc.total_qty = tq
+    doc.total_amount = ta
+
+@frappe.whitelist()
+def stock_log(from_date=None, to_date=None):
+    _prod_allowed()
+    filters = {}
+    if from_date and to_date:
+        filters["creation"] = ["between", [from_date + " 00:00:00", to_date + " 23:59:59"]]
+    rows = frappe.get_all("Stock Move", filters=filters,
+                          fields=["name", "product", "quantity", "entry_type", "reference", "notes", "creation"],
+                          order_by="creation desc", limit_page_length=500)
+    out = []
+    for r in rows:
+        out.append({
+            "name": r.name,
+            "product": r.product,
+            "product_name": frappe.db.get_value("Product", r.product, "product_name") or r.product,
+            "quantity": r.quantity or 0,
+            "entry_type": r.entry_type or "",
+            "reference": r.reference or "",
+            "notes": r.notes or "",
+            "date": str(r.creation)[:10],
+            "time": str(r.creation)[11:16],
+        })
+    return out
+
+
+@frappe.whitelist()
+def rozmel(from_date=None, to_date=None):
+    _ledger_guard()
+    from frappe.utils import today, add_days
+    d1 = from_date or today()
+    d2 = to_date or d1
+
+    def rows_for(a, b):
+        out = []
+        for r in frappe.get_all("Customer Payment",
+                                filters={"status": "Confirmed", "payment_date": ["between", [a, b]]},
+                                fields=["name", "customer", "amount", "channel", "reference", "payment_date"]):
+            out.append({"date": str(r.payment_date), "kind": "in",
+                        "desc": "Receipt - " + (r.customer or ""),
+                        "ref": (r.reference or r.name), "cin": r.amount or 0, "cout": 0})
+        for r in frappe.get_all("Vendor Payment",
+                                filters={"payment_date": ["between", [a, b]]},
+                                fields=["name", "vendor", "amount", "reference", "payment_date"]):
+            out.append({"date": str(r.payment_date), "kind": "out",
+                        "desc": "Paid - " + (r.vendor or ""),
+                        "ref": (r.reference or r.name), "cin": 0, "cout": r.amount or 0})
+        for r in frappe.get_all("Daily Expense",
+                                filters={"expense_date": ["between", [a, b]]},
+                                fields=["name", "title", "category", "amount", "expense_date"]):
+            out.append({"date": str(r.expense_date), "kind": "out",
+                        "desc": "Expense - " + (r.title or ""),
+                        "ref": (r.category or ""), "cin": 0, "cout": r.amount or 0})
+        return out
+
+    prev = rows_for("1900-01-01", add_days(d1, -1))
+    opening = sum(x["cin"] for x in prev) - sum(x["cout"] for x in prev)
+
+    rows = rows_for(d1, d2)
+    rows.sort(key=lambda x: x["date"])
+    bal = opening
+    for r in rows:
+        bal = bal + r["cin"] - r["cout"]
+        r["balance"] = bal
+
+    return {"from_date": d1, "to_date": d2, "opening": opening, "rows": rows,
+            "total_in": sum(r["cin"] for r in rows),
+            "total_out": sum(r["cout"] for r in rows),
+            "closing": bal}
+
+@frappe.whitelist()
+def stock_log(from_date=None, to_date=None):
+    from frappe.utils import today, add_days
+    d2 = to_date or today()
+    d1 = from_date or add_days(d2, -30)
+    rng = {"creation": ["between", [str(d1) + " 00:00:00", str(d2) + " 23:59:59"]]}
+    base = ["name", "product", "quantity", "creation"]
+    extra = ["entry_type", "reference", "notes"]
+    try:
+        rows = frappe.get_all("Stock Move", filters=rng, fields=base + extra,
+                              order_by="creation desc", limit_page_length=1000)
+    except Exception:
+        rows = frappe.get_all("Stock Move", filters=rng, fields=base,
+                              order_by="creation desc", limit_page_length=1000)
+    out = []
+    for r in rows:
+        out.append({
+            "name": r.get("name"),
+            "product": r.get("product"),
+            "product_name": frappe.db.get_value("Product", r.get("product"), "product_name") or r.get("product") or "",
+            "quantity": r.get("quantity") or 0,
+            "entry_type": r.get("entry_type") or "",
+            "reference": r.get("reference") or "",
+            "notes": r.get("notes") or "",
+            "date": str(r.get("creation"))[:10],
+            "time": str(r.get("creation"))[11:16],
+        })
+    return out
+
+
+@frappe.whitelist()
+def my_customers():
+    user = frappe.session.user
+    rows = frappe.get_all("Customer", fields=["name", "customer_name", "gstin", "contact", "address", "salesman"],
+                          order_by="customer_name asc")
+    if "System Manager" in frappe.get_roles():
+        return rows
+    mine = [r for r in rows if (r.get("salesman") or "") == user]
+    if not mine:
+        names = set()
+        for o in frappe.get_all("Customer Order", filters={"salesman": user}, fields=["customer"]):
+            if o.customer:
+                names.add(o.customer.strip().lower())
+        mine = [r for r in rows if (r.get("customer_name") or r.get("name") or "").strip().lower() in names]
+    return mine
+
+
+@frappe.whitelist()
+def set_cash_opening(opening_date, amount):
+    _ledger_guard()
+    amt = float(amount or 0)
+    existing = frappe.db.get_value("Cash Opening", {"opening_date": opening_date}, "name")
+    if existing:
+        frappe.db.set_value("Cash Opening", existing, "amount", amt)
+    else:
+        frappe.get_doc({"doctype": "Cash Opening", "opening_date": opening_date,
+                        "amount": amt}).insert(ignore_permissions=True)
+    frappe.db.commit()
+    return {"ok": True, "opening_date": opening_date, "amount": amt}
+
+
+@frappe.whitelist()
+def rozmel(from_date=None, to_date=None):
+    _ledger_guard()
+    from frappe.utils import today, add_days
+    d1 = from_date or today()
+    d2 = to_date or d1
+
+    def rows_for(a, b):
+        out = []
+        for r in frappe.get_all("Customer Payment",
+                                filters={"status": "Confirmed", "payment_date": ["between", [a, b]]},
+                                fields=["name", "customer", "amount", "reference", "payment_date"]):
+            out.append({"date": str(r.payment_date), "desc": "Receipt - " + (r.customer or ""),
+                        "ref": (r.reference or r.name), "cin": r.amount or 0, "cout": 0})
+        for r in frappe.get_all("Vendor Payment",
+                                filters={"payment_date": ["between", [a, b]]},
+                                fields=["name", "vendor", "amount", "reference", "payment_date"]):
+            out.append({"date": str(r.payment_date), "desc": "Paid - " + (r.vendor or ""),
+                        "ref": (r.reference or r.name), "cin": 0, "cout": r.amount or 0})
+        for r in frappe.get_all("Daily Expense",
+                                filters={"expense_date": ["between", [a, b]]},
+                                fields=["name", "title", "category", "amount", "expense_date"]):
+            out.append({"date": str(r.expense_date), "desc": "Expense - " + (r.title or ""),
+                        "ref": (r.category or ""), "cin": 0, "cout": r.amount or 0})
+        return out
+
+    base_amt = 0.0
+    base_date = "1900-01-01"
+    if frappe.db.exists("DocType", "Cash Opening"):
+        co = frappe.get_all("Cash Opening", filters={"opening_date": ["<=", d1]},
+                            fields=["opening_date", "amount"], order_by="opening_date desc", limit_page_length=1)
+        if co:
+            base_amt = float(co[0].amount or 0)
+            base_date = str(co[0].opening_date)
+
+    prev = rows_for(base_date, add_days(d1, -1))
+    opening = base_amt + sum(x["cin"] for x in prev) - sum(x["cout"] for x in prev)
+
+    rows = rows_for(d1, d2)
+    rows.sort(key=lambda x: x["date"])
+    bal = opening
+    for r in rows:
+        bal = bal + r["cin"] - r["cout"]
+        r["balance"] = bal
+
+    return {"from_date": d1, "to_date": d2, "opening": opening,
+            "opening_set_on": base_date if base_date != "1900-01-01" else None,
+            "opening_base": base_amt, "rows": rows,
+            "total_in": sum(r["cin"] for r in rows),
+            "total_out": sum(r["cout"] for r in rows),
+            "closing": bal}

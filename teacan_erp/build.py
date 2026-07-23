@@ -500,3 +500,58 @@ def setup_all():
 
     frappe.db.commit()
     print("DONE -> setup_all complete")
+
+def add_purchase_tally_fields():
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields({
+        "Purchase": [
+            {"fieldname": "tally_voucher_id", "fieldtype": "Data", "label": "Tally Voucher ID", "read_only": 1},
+            {"fieldname": "bill_no", "fieldtype": "Data", "label": "Supplier Bill No"},
+            {"fieldname": "purchase_date", "fieldtype": "Date", "label": "Purchase Date"},
+            {"fieldname": "source", "fieldtype": "Data", "label": "Source", "read_only": 1},
+        ],
+        "Vendor Payment": [
+            {"fieldname": "tally_voucher_id", "fieldtype": "Data", "label": "Tally Voucher ID", "read_only": 1},
+        ],
+    }, ignore_validate=True)
+    frappe.db.commit()
+    print("OK -> purchase/vendor-payment tally fields added")
+
+def add_purchase_tally_fields():
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields({
+        "Purchase": [
+            {"fieldname": "tally_voucher_id", "fieldtype": "Data", "label": "Tally Voucher ID", "read_only": 1},
+            {"fieldname": "bill_no", "fieldtype": "Data", "label": "Supplier Bill No"},
+            {"fieldname": "purchase_date", "fieldtype": "Date", "label": "Purchase Date"},
+            {"fieldname": "source", "fieldtype": "Data", "label": "Source", "read_only": 1},
+        ],
+        "Vendor Payment": [
+            {"fieldname": "tally_voucher_id", "fieldtype": "Data", "label": "Tally Voucher ID", "read_only": 1},
+        ],
+    }, ignore_validate=True)
+    frappe.db.commit()
+    print("OK -> purchase/vendor-payment tally fields added")
+
+def add_invoice_b_extras():
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields({
+        "Order Invoice": [
+            {"fieldname": "b_special_discount", "fieldtype": "Currency", "label": "Invoice B - Special Discount", "insert_after": "packaging"},
+            {"fieldname": "b_extra_product", "fieldtype": "Data", "label": "Invoice B - Extra Product", "insert_after": "b_special_discount"},
+            {"fieldname": "b_extra_qty", "fieldtype": "Float", "label": "Invoice B - Extra Qty", "insert_after": "b_extra_product"},
+            {"fieldname": "b_extra_price", "fieldtype": "Currency", "label": "Invoice B - Extra Price", "insert_after": "b_extra_qty"},
+        ],
+    }, ignore_validate=True)
+    frappe.db.commit()
+    print("OK -> invoice B extra fields added")
+
+def make_cash_opening():
+    make("Cash Opening",
+        [
+            {"fieldname": "opening_date", "fieldtype": "Date", "label": "Opening Date", "reqd": 1, "in_list_view": 1},
+            {"fieldname": "amount", "fieldtype": "Currency", "label": "Opening Cash", "reqd": 1, "in_list_view": 1},
+            {"fieldname": "notes", "fieldtype": "Small Text", "label": "Notes"},
+        ],
+        perms=[{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}],
+        autoname="CASH-.#####", naming_rule="Expression (old style)")
