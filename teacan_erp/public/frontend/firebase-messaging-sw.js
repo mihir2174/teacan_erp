@@ -4,11 +4,12 @@ importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js
 importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js");
 
 firebase.initializeApp({
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  messagingSenderId: "",
-  appId: "",
+  apiKey: "AIzaSyB0aUIMBanSuYR5YqkqOjN2B5MVxYd3nU0",
+  authDomain: "shalini-erp-fe020.firebaseapp.com",
+  projectId: "shalini-erp-fe020",
+  storageBucket: "shalini-erp-fe020.firebasestorage.app",
+  messagingSenderId: "443383003422",
+  appId: "1:443383003422:web:6b0b414ecd71aa6136710f"
 });
 
 const messaging = firebase.messaging();

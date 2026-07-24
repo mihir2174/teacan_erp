@@ -486,7 +486,8 @@ def setup_all():
             print("FAIL creating " + dt + ": " + str(e)[:140])
 
     fixers = ["grant_pm", "apply_perm_changes", "add_invoice_amounts",
-              "add_opening_fields", "apply_stock_usage", "add_tally_fields", "add_unit_support"]
+              "add_opening_fields", "apply_stock_usage", "add_tally_fields", "add_unit_support",
+              "add_purchase_tally_fields", "add_invoice_b_extras"]
     for name in fixers:
         fn = getattr(mod, name, None)
         if not fn:
