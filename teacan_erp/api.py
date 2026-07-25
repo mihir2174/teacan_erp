@@ -2091,3 +2091,59 @@ def rozmel(from_date=None, to_date=None):
             "total_in": sum(r["cin"] for r in rows),
             "total_out": sum(r["cout"] for r in rows),
             "closing": bal}
+
+# ---- Exempt our SPA's API calls from CSRF (session auth still applies) ----
+import frappe
+
+def _skip_csrf_for_spa():
+    try:
+        path = frappe.local.request.path or ""
+        if "/api/method/teacan_erp." in path and frappe.session.user != "Guest":
+            frappe.local.session.data.csrf_token = frappe.local.request.headers.get("X-Frappe-CSRF-Token") or "skip"
+    except Exception:
+        pass
+
+# Hook into every request
+_original_app = getattr(frappe, '_original_teacan_app', None)
+if not _original_app:
+    from frappe.app import application as _frappe_app
+    def _patched_app(environ, start_response):
+        _skip_csrf_for_spa()
+        return _frappe_app(environ, start_response)
+    frappe._original_teacan_app = True
+
+def skip_csrf_for_spa():
+    try:
+        path = getattr(frappe.local, "request", None) and frappe.local.request.path or ""
+        if "/api/method/teacan_erp." in path and frappe.session.user and frappe.session.user != "Guest":
+            frappe.local.session.data.csrf_token = frappe.local.request.headers.get("X-Frappe-CSRF-Token") or "skip"
+    except Exception:
+        pass
+
+# ---- Exempt our SPA's API calls from CSRF (session auth still applies) ----
+import frappe
+
+def _skip_csrf_for_spa():
+    try:
+        path = frappe.local.request.path or ""
+        if "/api/method/teacan_erp." in path and frappe.session.user != "Guest":
+            frappe.local.session.data.csrf_token = frappe.local.request.headers.get("X-Frappe-CSRF-Token") or "skip"
+    except Exception:
+        pass
+
+# Hook into every request
+_original_app = getattr(frappe, '_original_teacan_app', None)
+if not _original_app:
+    from frappe.app import application as _frappe_app
+    def _patched_app(environ, start_response):
+        _skip_csrf_for_spa()
+        return _frappe_app(environ, start_response)
+    frappe._original_teacan_app = True
+
+def skip_csrf_for_spa():
+    try:
+        path = getattr(frappe.local, "request", None) and frappe.local.request.path or ""
+        if "/api/method/teacan_erp." in path and frappe.session.user and frappe.session.user != "Guest":
+            frappe.local.session.data.csrf_token = frappe.local.request.headers.get("X-Frappe-CSRF-Token") or "skip"
+    except Exception:
+        pass
