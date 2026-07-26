@@ -267,6 +267,4 @@ doc_events = {
 after_install = "teacan_erp.build.setup_all"
 after_migrate = ["teacan_erp.build.setup_all"]
 
-before_request = ["teacan_erp.api.skip_csrf_for_spa"]
 
-before_request = ["teacan_erp.api.skip_csrf_for_spa"]
