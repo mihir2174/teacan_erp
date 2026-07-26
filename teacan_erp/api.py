@@ -17,9 +17,11 @@ def role_for(user):
             return label
     return "Salesman"
 
-@frappe.whitelist()
+@frappe.whitelist(allow_guest=True)
 def whoami():
     user = frappe.session.user
+    if user == "Guest":
+        return {"user": "Guest", "full_name": "", "role": ""}
     full_name = frappe.db.get_value("User", user, "full_name") or user
     return {"user": user, "full_name": full_name, "role": role_for(user)}
 
