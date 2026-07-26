@@ -2147,3 +2147,39 @@ def skip_csrf_for_spa():
             frappe.local.session.data.csrf_token = frappe.local.request.headers.get("X-Frappe-CSRF-Token") or "skip"
     except Exception:
         pass
+
+def _tally_vouchers(vtype, start, end):
+    comp = _tally_company()
+    comp_tag = '<SVCURRENTCOMPANY>' + _x(comp) + '</SVCURRENTCOMPANY>' if comp else ''
+    xml = ('<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>'
+           '<TYPE>Data</TYPE><ID>Voucher Register</ID></HEADER><BODY><DESC><STATICVARIABLES>'
+           '<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>'
+           + comp_tag +
+           '<SVFROMDATE>' + start + '</SVFROMDATE><SVTODATE>' + end + '</SVTODATE>'
+           '<VOUCHERTYPENAME>' + _x(vtype) + '</VOUCHERTYPENAME>'
+           '</STATICVARIABLES></DESC></BODY></ENVELOPE>')
+    return _tally_post(xml)
+
+def _tally_all_ledgers_raw():
+    comp = _tally_company()
+    comp_tag = '<SVCURRENTCOMPANY>' + _x(comp) + '</SVCURRENTCOMPANY>' if comp else ''
+    xml = ('<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>'
+           '<TYPE>Collection</TYPE><ID>All Ledgers</ID></HEADER><BODY><DESC><STATICVARIABLES>'
+           '<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>'
+           + comp_tag +
+           '</STATICVARIABLES><TDL><TDLMESSAGE>'
+           '<COLLECTION NAME="All Ledgers" ISMODIFY="No"><TYPE>Ledger</TYPE><FETCH>NAME</FETCH>'
+           '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>')
+    return _tally_post(xml)
+
+def _tally_all_items_raw():
+    comp = _tally_company()
+    comp_tag = '<SVCURRENTCOMPANY>' + _x(comp) + '</SVCURRENTCOMPANY>' if comp else ''
+    xml = ('<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>'
+           '<TYPE>Collection</TYPE><ID>All Items</ID></HEADER><BODY><DESC><STATICVARIABLES>'
+           '<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>'
+           + comp_tag +
+           '</STATICVARIABLES><TDL><TDLMESSAGE>'
+           '<COLLECTION NAME="All Items" ISMODIFY="No"><TYPE>StockItem</TYPE><FETCH>NAME</FETCH>'
+           '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>')
+    return _tally_post(xml)
