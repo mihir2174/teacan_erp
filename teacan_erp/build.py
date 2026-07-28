@@ -556,3 +556,13 @@ def make_cash_opening():
         ],
         perms=[{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}],
         autoname="CASH-.#####", naming_rule="Expression (old style)")
+
+def add_order_item_prod_discount():
+    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+    create_custom_fields({
+        "Order Item": [
+            {"fieldname": "prod_discount", "fieldtype": "Percent", "label": "Product Discount %", "default": "0"},
+        ],
+    }, ignore_validate=True)
+    frappe.db.commit()
+    print("OK -> prod_discount field added on Order Item")
