@@ -250,7 +250,7 @@ def customer_ledger(customer):
     invs = frappe.get_all("Order Invoice", filters={"customer": customer},
         fields=["name", "order", "a_amount", "b_amount", "grand_total", "creation"], order_by="creation asc")
     pays = frappe.get_all("Customer Payment", filters={"customer": customer},
-        fields=["name", "channel", "amount", "status", "source", "reference", "payment_date", "creation"], order_by="creation asc")
+        fields=["name", "channel", "amount", "status", "source", "reference", "payment_date", "creation", "mode"], order_by="creation asc")
 
     a_billed = sum((i.a_amount or 0) for i in invs)
     b_billed = sum((i.b_amount or 0) for i in invs)
@@ -269,7 +269,7 @@ def customer_ledger(customer):
         if p.status == "Confirmed":
             d = str(p.payment_date) if p.payment_date else str(p.creation)[:10]
             label = "Tally" if p.channel == "A" else "Collected"
-            rows.append({"date": d, "sort": d + "3", "desc": "Payment (" + label + ") - " + (p.reference or p.name), "debit": 0, "credit": (p.amount or 0)})
+            rows.append({"date": d, "sort": d + "3", "desc": "Payment (" + label + ") - " + (p.reference or p.name), "debit": 0, "credit": (p.amount or 0), "mode": (getattr(p, "mode", None) or "")})
     rows.sort(key=lambda x: x["sort"])
     bal = 0.0
     for r in rows:
@@ -394,7 +394,8 @@ def period_report(from_date=None, to_date=None):
     vout = frappe.get_all("Vendor Payment", filters={"payment_date": ["between", [f, t]]}, fields=["vendor", "amount", "reference"])
     exp = frappe.get_all("Daily Expense", filters={"expense_date": ["between", [f, t]]}, fields=["title", "category", "amount"])
     prod = frappe.get_all("Production", filters=[["modified", "between", [start, end]]], fields=["name", "order", "customer", "stage", "total_made", "total_good"])
-    pend = frappe.get_all("Customer Payment", filters={"status": "Pending", "payment_date": ["between", [f, t]]}, fields=["customer", "amount", "reference"])
+    pend = frappe.get_all("Customer Payment", filters={"status": "Pending",
+        "mode": mode, "payment_date": ["between", [f, t]]}, fields=["customer", "amount", "reference"])
     cin_t = sum((r.amount or 0) for r in cin); vout_t = sum((r.amount or 0) for r in vout)
     exp_t = sum((r.amount or 0) for r in exp); pend_t = sum((r.amount or 0) for r in pend)
     return {"from": f, "to": t, "collections_in": cin, "collections_in_total": cin_t,
@@ -1953,7 +1954,7 @@ def rozmel(from_date=None, to_date=None):
                         "desc": "Receipt - " + (r.customer or ""),
                         "ref": (r.reference or r.name), "cin": r.amount or 0, "cout": 0})
         for r in frappe.get_all("Vendor Payment",
-                                filters={"payment_date": ["between", [a, b]]},
+                                filters={"payment_date": ["between", [a, b]], "source": "Rozmel"},
                                 fields=["name", "vendor", "amount", "reference", "payment_date"]):
             out.append({"date": str(r.payment_date), "kind": "out",
                         "desc": "Paid - " + (r.vendor or ""),
@@ -2052,7 +2053,7 @@ def rozmel(from_date=None, to_date=None):
     def rows_for(a, b):
         out = []
         for r in frappe.get_all("Customer Payment",
-                                filters={"status": "Confirmed", "payment_date": ["between", [a, b]]},
+                                filters={"status": "Confirmed", "source": "Rozmel", "payment_date": ["between", [a, b]]},
                                 fields=["name", "customer", "amount", "reference", "payment_date"]):
             out.append({"date": str(r.payment_date), "desc": "Receipt - " + (r.customer or ""),
                         "ref": (r.reference or r.name), "cin": r.amount or 0, "cout": 0})
@@ -2185,3 +2186,29 @@ def _tally_all_items_raw():
            '<COLLECTION NAME="All Items" ISMODIFY="No"><TYPE>StockItem</TYPE><FETCH>NAME</FETCH>'
            '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>')
     return _tally_post(xml)
+
+
+@frappe.whitelist()
+def notify_order_status(order, status):
+    """Send push notification to the salesman who created the order."""
+    try:
+        doc = frappe.get_doc("Customer Order", order)
+        owner = doc.owner  # email of the salesman who created the order
+    except Exception:
+        return {"ok": False, "reason": "order_not_found"}
+
+    title = "Order " + status
+    body = "Your order " + order + " has been " + status.lower() + "."
+
+    tokens = frappe.get_all("FCM Token", filters={"user": owner, "enabled": 1}, fields=["name", "token"])
+    if not tokens:
+        return {"ok": True, "sent_to": 0, "reason": "no_token_for_" + owner}
+
+    sent = 0
+    for t in tokens:
+        try:
+            _fcm_send_to_token(t.token, title, body, {"order": order, "status": status})
+            sent += 1
+        except Exception as e:
+            frappe.log_error("FCM send failed for " + t.token[:20] + ": " + str(e)[:200], "notify_order_status")
+    return {"ok": True, "sent_to": sent}

@@ -88,6 +88,13 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
+  },
+  {
+   "fieldname": "mode",
+   "fieldtype": "Data",
+   "label": "Payment Mode",
+   "default": "Cash",
+   "in_list_view": 1
   }
  ],
  "grid_page_length": 50,
