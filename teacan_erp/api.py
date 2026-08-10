@@ -150,7 +150,7 @@ def approved_orders():
     for o in orders:
         prod = frappe.db.get_value("Production", {"order": o.name}, "name")
         items = frappe.get_all("Order Item", filters={"parent": o.name},
-            fields=["product", "qty"])
+            fields=["product", "qty", "rate", "prod_discount"])
         out.append({"name": o.name, "customer": o.customer, "total_qty": o.total_qty,
             "total_amount": o.total_amount, "in_production": bool(prod),
             "production": prod, "items": items})
@@ -195,7 +195,9 @@ def validate_order_invoice(doc, method=None):
         goods = 0.0
         for it in (order.items or []):
             main = it.rate or 0
-            disc = main * (1 - discount / 100.0)
+            prod_pct = it.get("prod_discount") or 0
+            after_prod = main * (1 - prod_pct / 100.0)
+            disc = after_prod * (1 - discount / 100.0)
             rate = _inv_r2(disc * share / 100.0)
             goods += _inv_r2(rate * (it.qty or 0))
         goods = _inv_r2(goods)
@@ -1836,67 +1838,31 @@ def live_stock():
 
 @frappe.whitelist()
 def deduct_stock_on_confirm(order=None):
-    if not order: order = frappe.form_dict.get('order')
+    if not order:
+        order = frappe.form_dict.get('order') or (frappe.request.args.get('order') if frappe.request else None)
+    if not order:
+        try:
+            import json
+            body = json.loads(frappe.request.data or "{}")
+            order = body.get("order")
+        except Exception:
+            pass
     if not frappe.db.exists("Customer Order", order):
         return
     doc = frappe.get_doc("Customer Order", order)
     if doc.status != "Confirmed":
         return
-    already = frappe.get_all("Stock Move", filters={"reference": order, "entry_type": "Order Deduct"}, limit=1)
+    already = frappe.get_all("Stock Move", filters={"reference": order, "entry_type": "Used"}, limit=1)
     if already:
         return
     for it in (doc.items or []):
         if (it.qty or 0) > 0:
             frappe.get_doc({
                 "doctype": "Stock Move", "product": it.product,
-                "quantity": -(it.qty or 0), "entry_type": "Order Deduct",
+                "quantity": -(it.qty or 0), "entry_type": "Used",
                 "reference": order, "notes": "Auto-deducted on order confirm",
             }).insert(ignore_permissions=True)
     frappe.db.commit()
-
-def validate_order_invoice(doc, method=None):
-    if not doc.order or not frappe.db.exists("Customer Order", doc.order):
-        return
-    order = frappe.get_doc("Customer Order", doc.order)
-    discount = doc.discount or 0
-    pct = doc.split_pct if doc.split_pct is not None else 50
-    gst = doc.gst_rate if doc.gst_rate is not None else 18
-    charges = (doc.transportation or 0) + (doc.packaging or 0)
-    special = float(doc.get("b_special_discount") or 0)
-    ex_qty = float(doc.get("b_extra_qty") or 0)
-    ex_price = float(doc.get("b_extra_price") or 0)
-    extra = _inv_r2(ex_qty * ex_price)
-
-    def split(share, extra_charge, gstrate):
-        goods = 0.0
-        for it in (order.items or []):
-            main = it.rate or 0
-            disc = main * (1 - discount / 100.0)
-            rate = _inv_r2(disc * share / 100.0)
-            goods += _inv_r2(rate * (it.qty or 0))
-        goods = _inv_r2(goods)
-        half = gstrate / 2.0
-        cgst = _inv_r2(goods * half / 100.0)
-        sgst = _inv_r2(goods * half / 100.0)
-        total = _inv_r2(goods + cgst + sgst + extra_charge)
-        return goods, cgst, sgst, total
-
-    ag, ac, asg, at = split(pct, 0, gst)
-    bg, bc, bsg, bt = split(100 - pct, charges, 0)
-    bg_total = _inv_r2(bg + extra)
-    bt = _inv_r2(bg_total + charges + special)
-
-    doc.a_goods = ag
-    doc.a_cgst = ac
-    doc.a_sgst = asg
-    doc.a_amount = at
-    doc.b_goods = bg_total
-    doc.b_cgst = 0
-    doc.b_sgst = 0
-    doc.b_charges = charges
-    doc.b_amount = bt
-    doc.grand_total = _inv_r2(at + bt)
-
 
 def validate_customer_order(doc, method=None):
     tq = 0.0
