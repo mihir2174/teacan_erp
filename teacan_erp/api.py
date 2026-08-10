@@ -217,7 +217,7 @@ def _ledger_guard():
 
 @frappe.whitelist()
 def customer_ledger_list():
-    _ledger_guard()
+    pass  # allow all logged-in users
     customers = frappe.get_all("Customer", fields=["name", "customer_name", "gstin", "salesman"], order_by="customer_name asc")
     inv = frappe.get_all("Order Invoice", fields=["customer", "grand_total"])
     pay = frappe.get_all("Customer Payment", fields=["customer", "amount", "status"])
@@ -245,12 +245,12 @@ def customer_ledger_list():
 
 @frappe.whitelist()
 def customer_ledger(customer):
-    _ledger_guard()
+    pass  # allow all logged-in users
     cust = frappe.get_doc("Customer", customer)
     invs = frappe.get_all("Order Invoice", filters={"customer": customer},
         fields=["name", "order", "a_amount", "b_amount", "grand_total", "creation"], order_by="creation asc")
     pays = frappe.get_all("Customer Payment", filters={"customer": customer},
-        fields=["name", "channel", "amount", "status", "source", "reference", "payment_date", "creation", "mode"], order_by="creation asc")
+        fields=["name", "channel", "amount", "status", "source", "reference", "payment_date", "creation", "mode", "kaap_note"], order_by="creation asc")
 
     a_billed = sum((i.a_amount or 0) for i in invs)
     b_billed = sum((i.b_amount or 0) for i in invs)
@@ -269,7 +269,7 @@ def customer_ledger(customer):
         if p.status == "Confirmed":
             d = str(p.payment_date) if p.payment_date else str(p.creation)[:10]
             label = "Tally" if p.channel == "A" else "Collected"
-            rows.append({"date": d, "sort": d + "3", "desc": "Payment (" + label + ") - " + (p.reference or p.name), "debit": 0, "credit": (p.amount or 0), "mode": (getattr(p, "mode", None) or "")})
+            rows.append({"date": d, "sort": d + "3", "desc": "Payment (" + label + ") - " + (p.reference or p.name), "debit": 0, "credit": (p.amount or 0), "mode": (getattr(p, "mode", None) or ""), "kaap_note": (getattr(p, "kaap_note", None) or "")})
     rows.sort(key=lambda x: x["sort"])
     bal = 0.0
     for r in rows:
@@ -395,7 +395,7 @@ def period_report(from_date=None, to_date=None):
     exp = frappe.get_all("Daily Expense", filters={"expense_date": ["between", [f, t]]}, fields=["title", "category", "amount"])
     prod = frappe.get_all("Production", filters=[["modified", "between", [start, end]]], fields=["name", "order", "customer", "stage", "total_made", "total_good"])
     pend = frappe.get_all("Customer Payment", filters={"status": "Pending",
-        "mode": mode, "payment_date": ["between", [f, t]]}, fields=["customer", "amount", "reference"])
+        "payment_date": ["between", [f, t]]}, fields=["customer", "amount", "reference", "mode"])
     cin_t = sum((r.amount or 0) for r in cin); vout_t = sum((r.amount or 0) for r in vout)
     exp_t = sum((r.amount or 0) for r in exp); pend_t = sum((r.amount or 0) for r in pend)
     return {"from": f, "to": t, "collections_in": cin, "collections_in_total": cin_t,
@@ -1835,7 +1835,8 @@ def live_stock():
 
 
 @frappe.whitelist()
-def deduct_stock_on_confirm(order):
+def deduct_stock_on_confirm(order=None):
+    if not order: order = frappe.form_dict.get('order')
     if not frappe.db.exists("Customer Order", order):
         return
     doc = frappe.get_doc("Customer Order", order)
