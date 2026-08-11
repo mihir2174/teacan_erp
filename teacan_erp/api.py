@@ -221,19 +221,20 @@ def _ledger_guard():
 def customer_ledger_list():
     pass  # allow all logged-in users
     customers = frappe.get_all("Customer", fields=["name", "customer_name", "gstin", "salesman"], order_by="customer_name asc")
-    inv = frappe.get_all("Order Invoice", fields=["customer", "grand_total"])
-    pay = frappe.get_all("Customer Payment", fields=["customer", "amount", "status"])
-    bill, paid, pend = {}, {}, {}
-    for r in inv:
+    
+    ledgers = frappe.get_all("Customer Ledger", fields=["customer", "debit", "credit"])
+    bill, paid = {}, {}
+    for l in ledgers:
+        if not l.customer: continue
+        bill[l.customer] = bill.get(l.customer, 0.0) + (l.debit or 0)
+        paid[l.customer] = paid.get(l.customer, 0.0) + (l.credit or 0)
+        
+    pend = {}
+    pays = frappe.get_all("Customer Payment", filters={"status": "Pending"}, fields=["customer", "amount"])
+    for r in pays:
         if r.customer:
-            bill[r.customer] = bill.get(r.customer, 0.0) + (r.grand_total or 0)
-    for r in pay:
-        if not r.customer:
-            continue
-        if r.status == "Confirmed":
-            paid[r.customer] = paid.get(r.customer, 0.0) + (r.amount or 0)
-        elif r.status == "Pending":
             pend[r.customer] = pend.get(r.customer, 0.0) + (r.amount or 0)
+            
     out = []
     for c in customers:
         billed = bill.get(c.name, 0.0)
@@ -249,41 +250,62 @@ def customer_ledger_list():
 def customer_ledger(customer):
     pass  # allow all logged-in users
     cust = frappe.get_doc("Customer", customer)
-    invs = frappe.get_all("Order Invoice", filters={"customer": customer},
-        fields=["name", "order", "a_amount", "b_amount", "grand_total", "creation"], order_by="creation asc")
+    
+    # Pending payments don't enter ledger until confirmed
     pays = frappe.get_all("Customer Payment", filters={"customer": customer},
         fields=["name", "channel", "amount", "status", "source", "reference", "payment_date", "creation", "mode", "kaap_note"], order_by="creation asc")
-
-    a_billed = sum((i.a_amount or 0) for i in invs)
-    b_billed = sum((i.b_amount or 0) for i in invs)
-    total_billed = sum((i.grand_total or 0) for i in invs)
-    a_paid = sum((p.amount or 0) for p in pays if p.channel == "A" and p.status == "Confirmed")
-    b_paid = sum((p.amount or 0) for p in pays if p.channel == "B" and p.status == "Confirmed")
-    collected = a_paid + b_paid
+    
     pending = sum((p.amount or 0) for p in pays if p.status == "Pending")
-
-    rows = []
-    for i in invs:
-        d = str(i.creation)[:10]
-        rows.append({"date": d, "sort": d + "1", "desc": "Invoice A - " + i.name, "debit": (i.a_amount or 0), "credit": 0})
-        rows.append({"date": d, "sort": d + "2", "desc": "Invoice B - " + i.name, "debit": (i.b_amount or 0), "credit": 0})
-    for p in pays:
-        if p.status == "Confirmed":
-            d = str(p.payment_date) if p.payment_date else str(p.creation)[:10]
-            label = "Tally" if p.channel == "A" else "Collected"
-            rows.append({"date": d, "sort": d + "3", "desc": "Payment (" + label + ") - " + (p.reference or p.name), "debit": 0, "credit": (p.amount or 0), "mode": (getattr(p, "mode", None) or ""), "kaap_note": (getattr(p, "kaap_note", None) or "")})
-    rows.sort(key=lambda x: x["sort"])
-    bal = 0.0
-    for r in rows:
-        bal += r["debit"] - r["credit"]
-        r["balance"] = bal
-
     pending_list = [{
         "name": p.name, "amount": (p.amount or 0),
         "date": str(p.payment_date) if p.payment_date else str(p.creation)[:10],
         "source": p.source, "reference": p.reference, "channel": p.channel,
     } for p in pays if p.status == "Pending"]
 
+    ledgers = frappe.get_all("Customer Ledger", filters={"customer": customer},
+        fields=["name", "ref_type", "ref", "channel", "debit", "credit", "creation"])
+    
+    a_billed = sum((l.debit or 0) for l in ledgers if l.ref_type == "Order Invoice" and l.channel == "A")
+    b_billed = sum((l.debit or 0) for l in ledgers if l.ref_type == "Order Invoice" and l.channel == "B")
+    total_billed = sum((l.debit or 0) for l in ledgers if l.ref_type == "Order Invoice")
+    
+    a_paid = sum((l.credit or 0) for l in ledgers if l.ref_type == "Customer Payment" and l.channel == "A")
+    b_paid = sum((l.credit or 0) for l in ledgers if l.ref_type == "Customer Payment" and l.channel == "B")
+    collected = sum((l.credit or 0) for l in ledgers if l.ref_type == "Customer Payment")
+    
+    rows = []
+    inv_names = [l.ref for l in ledgers if l.ref_type == "Order Invoice"]
+    pay_names = [l.ref for l in ledgers if l.ref_type == "Customer Payment"]
+    
+    inv_dict = {}
+    if inv_names:
+        for i in frappe.get_all("Order Invoice", filters={"name": ["in", inv_names]}, fields=["name", "creation"]):
+            inv_dict[i.name] = i
+            
+    pay_dict = {}
+    if pay_names:
+        for p in frappe.get_all("Customer Payment", filters={"name": ["in", pay_names]}, fields=["name", "payment_date", "creation", "reference", "mode", "kaap_note"]):
+            pay_dict[p.name] = p
+            
+    for l in ledgers:
+        if l.ref_type == "Order Invoice":
+            inv = inv_dict.get(l.ref)
+            if not inv: continue
+            d = str(inv.creation)[:10]
+            rows.append({"date": d, "sort": d + ("1" if l.channel == "A" else "2"), "desc": "Invoice " + (l.channel or "") + " - " + l.ref, "debit": (l.debit or 0), "credit": (l.credit or 0)})
+        elif l.ref_type == "Customer Payment":
+            p = pay_dict.get(l.ref)
+            if not p: continue
+            d = str(p.payment_date) if p.payment_date else str(p.creation)[:10]
+            label = "Tally" if l.channel == "A" else "Collected"
+            rows.append({"date": d, "sort": d + "3", "desc": "Payment (" + label + ") - " + (p.reference or l.ref), "debit": (l.debit or 0), "credit": (l.credit or 0), "mode": (getattr(p, "mode", None) or ""), "kaap_note": (getattr(p, "kaap_note", None) or "")})
+            
+    rows.sort(key=lambda x: x["sort"])
+    bal = 0.0
+    for r in rows:
+        bal += r["debit"] - r["credit"]
+        r["balance"] = bal
+        
     return {
         "customer": cust.name, "customer_name": cust.customer_name, "gstin": cust.gstin, "salesman": cust.salesman,
         "a_billed": a_billed, "b_billed": b_billed, "total_billed": total_billed,
@@ -339,23 +361,24 @@ def my_outstanding():
     user = frappe.session.user
     orders = frappe.get_all("Customer Order", filters={"salesman": user}, fields=["customer"])
     custs = sorted(set([(o.customer or "").strip() for o in orders if o.customer]))
-    inv = frappe.get_all("Order Invoice", fields=["customer", "a_amount", "b_amount"])
-    pay = frappe.get_all("Customer Payment", fields=["customer", "channel", "amount", "status"])
-    ab, bb, ap, bp, pend = {}, {}, {}, {}, {}
-    for r in inv:
+    
+    ledgers = frappe.get_all("Customer Ledger", fields=["customer", "channel", "debit", "credit"])
+    ab, bb, ap, bp = {}, {}, {}, {}
+    for l in ledgers:
+        if not l.customer: continue
+        if l.channel == "A":
+            ab[l.customer] = ab.get(l.customer, 0.0) + (l.debit or 0)
+            ap[l.customer] = ap.get(l.customer, 0.0) + (l.credit or 0)
+        elif l.channel == "B":
+            bb[l.customer] = bb.get(l.customer, 0.0) + (l.debit or 0)
+            bp[l.customer] = bp.get(l.customer, 0.0) + (l.credit or 0)
+            
+    pend = {}
+    pays = frappe.get_all("Customer Payment", filters={"status": "Pending"}, fields=["customer", "amount"])
+    for r in pays:
         if r.customer:
-            ab[r.customer] = ab.get(r.customer, 0.0) + (r.a_amount or 0)
-            bb[r.customer] = bb.get(r.customer, 0.0) + (r.b_amount or 0)
-    for r in pay:
-        if not r.customer:
-            continue
-        if r.status == "Confirmed":
-            if r.channel == "A":
-                ap[r.customer] = ap.get(r.customer, 0.0) + (r.amount or 0)
-            else:
-                bp[r.customer] = bp.get(r.customer, 0.0) + (r.amount or 0)
-        elif r.status == "Pending":
             pend[r.customer] = pend.get(r.customer, 0.0) + (r.amount or 0)
+            
     out = []
     for c in custs:
         out.append({"customer": c, "a_billed": ab.get(c, 0.0), "b_billed": bb.get(c, 0.0),
