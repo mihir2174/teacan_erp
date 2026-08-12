@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 1,
  "autoname": "field:customer_name",
  "creation": "2026-06-25 02:28:11.669546",
@@ -12,7 +13,8 @@
   "contact",
   "address",
   "salesman",
-  "tally_ledger"
+  "tally_ledger",
+  "state"
  ],
  "fields": [
   {
@@ -50,12 +52,17 @@
    "fieldname": "tally_ledger",
    "fieldtype": "Data",
    "label": "Tally Ledger Name"
+  },
+  {
+   "fieldname": "state",
+   "fieldtype": "Data",
+   "label": "State"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-25 02:28:11.669546",
+ "modified": "2026-08-11 18:20:20.535923",
  "modified_by": "Administrator",
  "module": "Teacan ERP",
  "name": "Customer",
