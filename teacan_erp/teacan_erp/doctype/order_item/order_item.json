@@ -28,7 +28,6 @@
    "label": "Qty"
   },
   {
-   "fetch_from": "product.price",
    "fieldname": "rate",
    "fieldtype": "Currency",
    "in_list_view": 1,
@@ -46,7 +45,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-08-11 17:38:30.231909",
+ "modified": "2026-08-12 16:04:10.449311",
  "modified_by": "Administrator",
  "module": "Teacan ERP",
  "name": "Order Item",
