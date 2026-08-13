@@ -17,7 +17,8 @@
   "reference",
   "tally_voucher_id",
   "invoice",
-  "notes"
+  "notes",
+  "kaap_note"
  ],
  "fields": [
   {
@@ -95,6 +96,11 @@
    "label": "Payment Mode",
    "default": "Cash",
    "in_list_view": 1
+  },
+  {
+   "fieldname": "kaap_note",
+   "fieldtype": "Small Text",
+   "label": "Kaap Note"
   }
  ],
  "grid_page_length": 50,

@@ -9,6 +9,7 @@
   "product",
   "qty",
   "rate",
+  "prod_discount",
   "amount"
  ],
  "fields": [
@@ -39,13 +40,19 @@
    "in_list_view": 1,
    "label": "Amount",
    "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "prod_discount",
+   "fieldtype": "Float",
+   "label": "Discount %"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-08-12 16:04:10.449311",
+ "modified": "2026-08-13 16:43:01.500523",
  "modified_by": "Administrator",
  "module": "Teacan ERP",
  "name": "Order Item",

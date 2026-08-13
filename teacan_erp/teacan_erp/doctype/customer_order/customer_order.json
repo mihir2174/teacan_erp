@@ -15,7 +15,8 @@
   "salesman",
   "items",
   "total_qty",
-  "total_amount"
+  "total_amount",
+  "note"
  ],
  "fields": [
   {
@@ -74,6 +75,11 @@
    "in_list_view": 1,
    "label": "Total Amount",
    "read_only": 1
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note"
   }
  ],
  "grid_page_length": 50,
