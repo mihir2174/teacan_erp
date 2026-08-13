@@ -265,9 +265,9 @@ def customer_ledger(customer):
     ledgers = frappe.get_all("Customer Ledger", filters={"customer": customer},
         fields=["name", "ref_type", "ref", "channel", "debit", "credit", "creation"])
     
-    a_billed = sum((l.debit or 0) for l in ledgers if l.ref_type == "Order Invoice" and l.channel == "A")
-    b_billed = sum((l.debit or 0) for l in ledgers if l.ref_type == "Order Invoice" and l.channel == "B")
-    total_billed = sum((l.debit or 0) for l in ledgers if l.ref_type == "Order Invoice")
+    a_billed = sum((l.debit or 0) for l in ledgers if (l.ref_type == "Order Invoice" or not l.ref_type) and l.channel == "A")
+    b_billed = sum((l.debit or 0) for l in ledgers if (l.ref_type == "Order Invoice" or not l.ref_type) and l.channel == "B")
+    total_billed = sum((l.debit or 0) for l in ledgers if l.ref_type == "Order Invoice" or not l.ref_type)
     
     a_paid = sum((l.credit or 0) for l in ledgers if l.ref_type == "Customer Payment" and l.channel == "A")
     b_paid = sum((l.credit or 0) for l in ledgers if l.ref_type == "Customer Payment" and l.channel == "B")
@@ -288,7 +288,9 @@ def customer_ledger(customer):
             pay_dict[p.name] = p
             
     for l in ledgers:
-        if l.ref_type == "Order Invoice":
+        if not l.ref_type and l.ref and l.ref.startswith("TALLY-OPENING"):
+            rows.append({"date": str(l.creation)[:10], "sort": "0000-00-00", "desc": "Opening Balance (from Tally)", "debit": (l.debit or 0), "credit": (l.credit or 0)})
+        elif l.ref_type == "Order Invoice":
             inv = inv_dict.get(l.ref)
             if not inv: continue
             d = str(inv.creation)[:10]
@@ -559,8 +561,8 @@ def post_invoice_to_tally(invoice, force=0):
 
     xml = ('<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA>'
            '<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC><REQUESTDATA>'
-           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Sales" ACTION="Create">'
-           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>'
+           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Tax Invoice GST" ACTION="Create">'
+           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Tax Invoice GST</VOUCHERTYPENAME>'
            '<VOUCHERNUMBER>' + _x(inv.name) + '</VOUCHERNUMBER>'
            '<PARTYLEDGERNAME>' + _x(tled) + '</PARTYLEDGERNAME>'
            '<PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>'
@@ -944,8 +946,8 @@ def post_invoice_to_tally(invoice, force=0):
     gst_tag = ('<PARTYGSTIN>' + _x(gstin) + '</PARTYGSTIN>') if gstin else ''
     xml = ('<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA>'
            '<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC><REQUESTDATA>'
-           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Sales" ACTION="Create">'
-           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>'
+           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Tax Invoice GST" ACTION="Create">'
+           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Tax Invoice GST</VOUCHERTYPENAME>'
            '<VOUCHERNUMBER>' + _x(inv.name) + '</VOUCHERNUMBER>'
            '<PARTYLEDGERNAME>' + _x(tled) + '</PARTYLEDGERNAME>'
            '<PARTYNAME>' + _x(tled) + '</PARTYNAME>' + gst_tag +
@@ -1121,8 +1123,8 @@ def post_invoice_to_tally(invoice, force=0):
     gst_tag = ('<PARTYGSTIN>' + _x(gstin) + '</PARTYGSTIN>') if gstin else ''
     xml = ('<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA>'
            '<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC><REQUESTDATA>'
-           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Sales" ACTION="Create">'
-           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>'
+           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Tax Invoice GST" ACTION="Create">'
+           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Tax Invoice GST</VOUCHERTYPENAME>'
            '<VOUCHERNUMBER>' + _x(inv.name) + '</VOUCHERNUMBER>'
            '<PARTYLEDGERNAME>' + _x(tled) + '</PARTYLEDGERNAME>'
            '<PARTYNAME>' + _x(tled) + '</PARTYNAME>' + gst_tag +
@@ -1419,8 +1421,8 @@ def post_invoice_to_tally(invoice, force=0):
            '<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES>'
            '<SVCURRENTCOMPANY>' + _x(_tally_company()) + '</SVCURRENTCOMPANY>'
            '</STATICVARIABLES></REQUESTDESC><REQUESTDATA>'
-           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Sales" ACTION="Create">'
-           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>'
+           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Tax Invoice GST" ACTION="Create">'
+           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Tax Invoice GST</VOUCHERTYPENAME>'
            '<VOUCHERNUMBER>' + _x(inv.name) + '</VOUCHERNUMBER>'
            '<PARTYLEDGERNAME>' + _x(tled) + '</PARTYLEDGERNAME>'
            '<PARTYNAME>' + _x(tled) + '</PARTYNAME>' + gst_tag +
@@ -1571,8 +1573,8 @@ def post_invoice_to_tally(invoice, force=0):
            '<REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME><STATICVARIABLES>'
            '<SVCURRENTCOMPANY>' + _x(_tally_company()) + '</SVCURRENTCOMPANY>'
            '</STATICVARIABLES></REQUESTDESC><REQUESTDATA>'
-           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Sales" ACTION="Create">'
-           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>'
+           '<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Tax Invoice GST" ACTION="Create">'
+           '<DATE>' + d8 + '</DATE><VOUCHERTYPENAME>Tax Invoice GST</VOUCHERTYPENAME>'
            '<VOUCHERNUMBER>' + _x(inv.name) + '</VOUCHERNUMBER>'
            '<PARTYLEDGERNAME>' + _x(tled) + '</PARTYLEDGERNAME>'
            '<PARTYNAME>' + _x(tled) + '</PARTYNAME>' + gst_tag +
@@ -2202,3 +2204,83 @@ def notify_order_status(order, status):
         except Exception as e:
             frappe.log_error("FCM send failed for " + t.token[:20] + ": " + str(e)[:200], "notify_order_status")
     return {"ok": True, "sent_to": sent}
+@frappe.whitelist()
+def raw_stock_log(from_date=None, to_date=None):
+    from frappe.utils import today
+    f = from_date or today()
+    t = to_date or today()
+    moves = frappe.get_all("Raw Stock Move",
+        filters={"creation": ["between", [f, t + " 23:59:59"]]},
+        fields=["name", "material", "quantity", "creation"],
+        order_by="creation desc", limit_page_length=500)
+    out = []
+    for m in moves:
+        d = str(m.creation)[:10]
+        out.append({"name": m.name, "material": m.material, "quantity": m.quantity, "date": d})
+    return out
+
+
+@frappe.whitelist()
+def sync_tally_customer_outstanding():
+    _ledger_guard()
+    import re
+    comp = _tally_company()
+    xml = ('<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>'
+           '<TYPE>Collection</TYPE><ID>CustBal</ID></HEADER><BODY><DESC><STATICVARIABLES>'
+           '<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>'
+           '<SVCURRENTCOMPANY>' + _x(comp) + '</SVCURRENTCOMPANY>'
+           '</STATICVARIABLES><TDL><TDLMESSAGE>'
+           '<COLLECTION NAME="CustBal" ISMODIFY="No">'
+           '<TYPE>Ledger</TYPE>'
+           '<CHILDOF>Sundry Debtors</CHILDOF>'
+           '<FETCH>Name,ClosingBalance</FETCH>'
+           '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>')
+    t = _tally_post(xml)
+
+    def unesc(s):
+        return (s or "").replace("&amp;", "&").replace("&quot;", '"').replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").strip()
+
+    created_cust = created_ledger = updated = 0
+    for lm in re.finditer(r'<LEDGER[^>]*\bNAME="([^"]*)"[^>]*>(.*?)</LEDGER>', t or "", re.S):
+        name = unesc(lm.group(1))
+        block = lm.group(2)
+        cb = re.search(r"<CLOSINGBALANCE[^>]*>(.*?)</CLOSINGBALANCE>", block, re.S)
+        if not name.strip(): continue
+        m = re.search(r"-?\d+(?:\.\d+)?", (cb.group(1) if cb else "0").replace(",", ""))
+        outstanding = float(m.group(0)) if m else 0.0
+
+        cust = None
+        for c in frappe.get_all("Customer", filters={"tally_ledger": name}, fields=["name"]): cust = c.name
+        if not cust:
+            for c in frappe.get_all("Customer", filters={"customer_name": name}, fields=["name"]): cust = c.name
+        if not cust:
+            import re as _re
+            safe_name = _re.sub(r"[^\w\s\-.,()]+", "", name, flags=_re.UNICODE).strip() or "Customer"
+            if frappe.db.exists("Customer", safe_name):
+                cust = safe_name
+            else:
+                frappe.get_doc({"doctype": "Customer", "customer_name": safe_name, "tally_ledger": name}).insert(ignore_permissions=True)
+                cust = safe_name
+                created_cust += 1
+
+        ref_key = "TALLY-OPENING-" + name
+        if frappe.db.exists("Customer Ledger", {"ref": ref_key}):
+            existing = frappe.get_all("Customer Ledger", filters={"ref": ref_key}, fields=["name"])
+            if existing:
+                frappe.db.set_value("Customer Ledger", existing[0].name, {
+                    "debit": outstanding if outstanding > 0 else 0,
+                    "credit": abs(outstanding) if outstanding < 0 else 0})
+            updated += 1
+        else:
+            cl = frappe.get_doc({"doctype": "Customer Ledger", "customer": cust,
+                "ref_type": "", "ref": ref_key, "channel": "A",
+                "debit": abs(outstanding) if outstanding < 0 else 0,
+                "credit": outstanding if outstanding > 0 else 0,
+            })
+            cl.flags.ignore_links = True
+            cl.flags.ignore_mandatory = True
+            cl.insert(ignore_permissions=True)
+            created_ledger += 1
+
+    frappe.db.commit()
+    return {"ok": True, "customers_created": created_cust, "ledger_entries_created": created_ledger, "updated": updated}
