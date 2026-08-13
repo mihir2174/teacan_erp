@@ -2204,6 +2204,86 @@ def notify_order_status(order, status):
         except Exception as e:
             frappe.log_error("FCM send failed for " + t.token[:20] + ": " + str(e)[:200], "notify_order_status")
     return {"ok": True, "sent_to": sent}
+
+
+@frappe.whitelist()
+def sync_tally_customer_outstanding():
+    _ledger_guard()
+    import re as _re
+    comp = _tally_company()
+
+    # Step 1: Clean old Tally entries to avoid double counting
+    frappe.db.sql("DELETE FROM `tabCustomer Ledger` WHERE ref LIKE 'TALLY-R-%'")
+    frappe.db.sql("DELETE FROM `tabCustomer Payment` WHERE source='Tally'")
+    frappe.db.sql("""DELETE FROM `tabCustomer Ledger`
+        WHERE ref_type='Customer Payment'
+        AND ref NOT IN (SELECT name FROM `tabCustomer Payment`)
+        AND ref NOT LIKE 'TALLY%'""")
+    frappe.db.commit()
+
+    # Step 2: Pull closing balance of all Sundry Debtors
+    xml = ('<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>'
+           '<TYPE>Collection</TYPE><ID>CustBal</ID></HEADER><BODY><DESC><STATICVARIABLES>'
+           '<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>'
+           '<SVCURRENTCOMPANY>' + _x(comp) + '</SVCURRENTCOMPANY>'
+           '</STATICVARIABLES><TDL><TDLMESSAGE>'
+           '<COLLECTION NAME="CustBal" ISMODIFY="No">'
+           '<TYPE>Ledger</TYPE><CHILDOF>Sundry Debtors</CHILDOF>'
+           '<FETCH>Name,ClosingBalance</FETCH>'
+           '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>')
+    t = _tally_post(xml)
+
+    def unesc(val):
+        return (val or "").replace("&amp;", "&").replace("&quot;", '"').replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").strip()
+
+    created_cust = created_ledger = updated = 0
+
+    for lm in _re.finditer(r'<LEDGER[^>]*\bNAME="([^"]*)"[^>]*>(.*?)</LEDGER>', t or "", _re.S):
+        name = unesc(lm.group(1))
+        block = lm.group(2)
+        cb = _re.search(r"<CLOSINGBALANCE[^>]*>(.*?)</CLOSINGBALANCE>", block, _re.S)
+        if not name.strip():
+            continue
+        m = _re.search(r"-?[\d,]+(?:\.\d+)?", (cb.group(1) if cb else "0").replace(",", ""))
+        outstanding = float(m.group(0)) if m else 0.0
+
+        cust = None
+        for c in frappe.get_all("Customer", filters={"tally_ledger": name}, fields=["name"]):
+            cust = c.name
+        if not cust:
+            for c in frappe.get_all("Customer", filters={"customer_name": name}, fields=["name"]):
+                cust = c.name
+        if not cust:
+            safe_name = _re.sub(r"[^\w\s\-.,()]+", "", name, flags=_re.UNICODE).strip() or "Customer"
+            if frappe.db.exists("Customer", safe_name):
+                cust = safe_name
+            else:
+                frappe.get_doc({"doctype": "Customer", "customer_name": safe_name, "tally_ledger": name}).insert(ignore_permissions=True)
+                cust = safe_name
+                created_cust += 1
+
+        ref_key = "TALLY-OPENING-" + name
+        debit_amt = abs(outstanding) if outstanding < 0 else 0
+        credit_amt = outstanding if outstanding > 0 else 0
+
+        if frappe.db.exists("Customer Ledger", {"ref": ref_key}):
+            existing = frappe.get_all("Customer Ledger", filters={"ref": ref_key}, fields=["name"])
+            if existing:
+                frappe.db.set_value("Customer Ledger", existing[0].name, {"debit": debit_amt, "credit": credit_amt})
+            updated += 1
+        else:
+            cl = frappe.get_doc({"doctype": "Customer Ledger", "customer": cust,
+                "ref_type": "", "ref": ref_key, "channel": "A",
+                "debit": debit_amt, "credit": credit_amt})
+            cl.flags.ignore_links = True
+            cl.flags.ignore_mandatory = True
+            cl.insert(ignore_permissions=True)
+            created_ledger += 1
+
+    frappe.db.commit()
+    return {"ok": True, "customers_created": created_cust, "ledger_entries_created": created_ledger, "updated": updated}
+
+
 @frappe.whitelist()
 def raw_stock_log(from_date=None, to_date=None):
     from frappe.utils import today
@@ -2214,73 +2294,7 @@ def raw_stock_log(from_date=None, to_date=None):
         fields=["name", "material", "quantity", "creation"],
         order_by="creation desc", limit_page_length=500)
     out = []
-    for m in moves:
-        d = str(m.creation)[:10]
-        out.append({"name": m.name, "material": m.material, "quantity": m.quantity, "date": d})
+    for mv in moves:
+        d = str(mv.creation)[:10]
+        out.append({"name": mv.name, "material": mv.material, "quantity": mv.quantity, "date": d})
     return out
-
-
-@frappe.whitelist()
-def sync_tally_customer_outstanding():
-    _ledger_guard()
-    import re
-    comp = _tally_company()
-    xml = ('<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST>'
-           '<TYPE>Collection</TYPE><ID>CustBal</ID></HEADER><BODY><DESC><STATICVARIABLES>'
-           '<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>'
-           '<SVCURRENTCOMPANY>' + _x(comp) + '</SVCURRENTCOMPANY>'
-           '</STATICVARIABLES><TDL><TDLMESSAGE>'
-           '<COLLECTION NAME="CustBal" ISMODIFY="No">'
-           '<TYPE>Ledger</TYPE>'
-           '<CHILDOF>Sundry Debtors</CHILDOF>'
-           '<FETCH>Name,ClosingBalance</FETCH>'
-           '</COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>')
-    t = _tally_post(xml)
-
-    def unesc(s):
-        return (s or "").replace("&amp;", "&").replace("&quot;", '"').replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").strip()
-
-    created_cust = created_ledger = updated = 0
-    for lm in re.finditer(r'<LEDGER[^>]*\bNAME="([^"]*)"[^>]*>(.*?)</LEDGER>', t or "", re.S):
-        name = unesc(lm.group(1))
-        block = lm.group(2)
-        cb = re.search(r"<CLOSINGBALANCE[^>]*>(.*?)</CLOSINGBALANCE>", block, re.S)
-        if not name.strip(): continue
-        m = re.search(r"-?\d+(?:\.\d+)?", (cb.group(1) if cb else "0").replace(",", ""))
-        outstanding = float(m.group(0)) if m else 0.0
-
-        cust = None
-        for c in frappe.get_all("Customer", filters={"tally_ledger": name}, fields=["name"]): cust = c.name
-        if not cust:
-            for c in frappe.get_all("Customer", filters={"customer_name": name}, fields=["name"]): cust = c.name
-        if not cust:
-            import re as _re
-            safe_name = _re.sub(r"[^\w\s\-.,()]+", "", name, flags=_re.UNICODE).strip() or "Customer"
-            if frappe.db.exists("Customer", safe_name):
-                cust = safe_name
-            else:
-                frappe.get_doc({"doctype": "Customer", "customer_name": safe_name, "tally_ledger": name}).insert(ignore_permissions=True)
-                cust = safe_name
-                created_cust += 1
-
-        ref_key = "TALLY-OPENING-" + name
-        if frappe.db.exists("Customer Ledger", {"ref": ref_key}):
-            existing = frappe.get_all("Customer Ledger", filters={"ref": ref_key}, fields=["name"])
-            if existing:
-                frappe.db.set_value("Customer Ledger", existing[0].name, {
-                    "debit": outstanding if outstanding > 0 else 0,
-                    "credit": abs(outstanding) if outstanding < 0 else 0})
-            updated += 1
-        else:
-            cl = frappe.get_doc({"doctype": "Customer Ledger", "customer": cust,
-                "ref_type": "", "ref": ref_key, "channel": "A",
-                "debit": abs(outstanding) if outstanding < 0 else 0,
-                "credit": outstanding if outstanding > 0 else 0,
-            })
-            cl.flags.ignore_links = True
-            cl.flags.ignore_mandatory = True
-            cl.insert(ignore_permissions=True)
-            created_ledger += 1
-
-    frappe.db.commit()
-    return {"ok": True, "customers_created": created_cust, "ledger_entries_created": created_ledger, "updated": updated}
